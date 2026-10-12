@@ -11,7 +11,7 @@ local function createCloverLibrary()
     local lib = {Unloaded = false, ToggleKeybind = false :: any, CleanupCallbacks={}}
     local colors = {bg = Color3.fromRGB(13,15,14), panel = Color3.fromRGB(21,23,21),
         field = Color3.fromRGB(34,37,32), line = Color3.fromRGB(49,53,44),
-        text = Color3.fromRGB(239,242,231), muted = Color3.fromRGB(155,162,147),
+        text = Color3.fromRGB(245,247,239), muted = Color3.fromRGB(178,185,169),
         accent = Color3.fromRGB(190,219,65)}
     local function make(class, props, parent)
         local object = Instance.new(class)
@@ -126,14 +126,14 @@ local function createCloverLibrary()
         if self.unloadCallback then self.unloadCallback() end
     end
     function lib:CreateWindow(settings)
-        window=make("CanvasGroup", {GroupTransparency=0,Size=UDim2.fromOffset(820,550), AnchorPoint=Vector2.new(.5,.5),
+        window=make("CanvasGroup", {GroupTransparency=0,Size=UDim2.fromOffset(820,590), AnchorPoint=Vector2.new(.5,.5),
             Position=UDim2.fromScale(.5,.5), BackgroundColor3=colors.bg, BorderSizePixel=0}, screen)
         round(window,14)
         make("UIStroke", {Color=colors.line, Thickness=1}, window)
         local scale=make("UIScale", {}, window); windowScale=scale
         local function resize()
             local camera=workspace.CurrentCamera
-            if camera then windowBaseScale=math.max(.2,math.min(1, (camera.ViewportSize.X-24)/820, (camera.ViewportSize.Y-24)/550)); scale.Scale=windowBaseScale end
+            if camera then windowBaseScale=math.max(.2,math.min(1, (camera.ViewportSize.X-24)/820, (camera.ViewportSize.Y-24)/590)); scale.Scale=windowBaseScale end
         end
         resize()
         local viewportConnection
@@ -150,10 +150,10 @@ local function createCloverLibrary()
         round(sidebar,10)
         local brand=label(sidebar,"CLOVER",18)
         brand.Position=UDim2.fromOffset(16,15); brand.TextColor3=colors.accent
-        local subtitle=label(sidebar,"RETRIBUTION  /  CONTROL",9)
+        local subtitle=label(sidebar,string.upper(runtime.profile or "RETRIBUTION"),10)
         subtitle.Position=UDim2.fromOffset(16,39); subtitle.TextColor3=colors.muted
-        local nav=make("ScrollingFrame", {BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new(), Position=UDim2.fromOffset(10,80),
-            Size=UDim2.new(1,-20,1,-134)}, sidebar)
+        local nav=make("ScrollingFrame", {BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new(), Position=UDim2.fromOffset(10,120),
+            Size=UDim2.new(1,-20,1,-174)}, sidebar)
         make("UIListLayout", {Padding=UDim.new(0,7), SortOrder=Enum.SortOrder.LayoutOrder}, nav)
         local hint=label(sidebar,"RightShift to show / hide",10)
         hint.Position=UDim2.new(0,16,1,-34); hint.TextColor3=colors.muted
@@ -181,6 +181,16 @@ local function createCloverLibrary()
             end
         end)
         local pages, first={},true
+        local search=make("TextBox",{Text="",PlaceholderText="Find a tab...",ClearTextOnFocus=false,
+            BackgroundColor3=colors.field,TextColor3=colors.text,PlaceholderColor3=colors.muted,
+            Font=Enum.Font.Gotham,TextSize=12,TextXAlignment=Enum.TextXAlignment.Left,
+            Position=UDim2.fromOffset(10,80),Size=UDim2.new(1,-20,0,30),BorderSizePixel=0},sidebar)
+        round(search,8); make("UIPadding",{PaddingLeft=UDim.new(0,9)},search)
+        connect(search:GetPropertyChangedSignal("Text"),function()
+            local query=search.Text:lower()
+            for _,entry in ipairs(pages) do entry.button.Visible=entry.name:lower():find(query,1,true)~=nil end
+            nav.CanvasPosition=Vector2.zero
+        end)
         local function group(parent,title)
             local section=make("Frame", {BackgroundColor3=colors.panel, BorderSizePixel=0,
                 Size=UDim2.new(1,0,0,0), AutomaticSize=Enum.AutomaticSize.Y},parent)
@@ -188,7 +198,7 @@ local function createCloverLibrary()
             make("UIPadding",{PaddingTop=UDim.new(0,12),PaddingBottom=UDim.new(0,12),
                 PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)},section)
             make("UIListLayout",{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder},section)
-            local titleLabel=label(section,string.upper(title),10); titleLabel.TextColor3=colors.muted
+            local titleLabel=label(section,string.upper(title),11); titleLabel.TextColor3=colors.muted
             local g={}
             local order=0
             local function row(height)
@@ -196,8 +206,8 @@ local function createCloverLibrary()
                 return make("Frame",{BackgroundTransparency=1,Size=UDim2.new(1,0,0,height or 34),LayoutOrder=order},section)
             end
             function g:AddLabel(text,wrap)
-                local r=row(wrap and 48 or 24)
-                local l=label(r,text,11); l.Size=UDim2.fromScale(1,1); l.TextWrapped=true; l.TextColor3=colors.muted
+                local r=row(wrap and 58 or 26)
+                local l=label(r,text,12); l.Size=UDim2.fromScale(1,1); l.TextWrapped=true; l.TextColor3=colors.muted
                 local result={}
                 function result:SetText(text) l.Text=tostring(text) end
                 function result:AddKeyPicker(id,data)
@@ -232,7 +242,7 @@ local function createCloverLibrary()
                 o.render(); connect(b.Activated,function() o:SetValue(not o.Value) end); return o
             end
             function g:AddInput(id,data)
-                local r=row(57); label(r,data.Text,11)
+                local r=row(57); label(r,data.Text,12)
                 local b=make("TextBox",{Text=tostring(data.Default or ""),PlaceholderText=data.Placeholder or "Enter value",
                     ClearTextOnFocus=false,BackgroundColor3=colors.field,TextColor3=colors.text,
                     PlaceholderColor3=colors.muted,Font=Enum.Font.Gotham,TextSize=12,
@@ -244,7 +254,7 @@ local function createCloverLibrary()
                 return o
             end
             function g:AddSlider(id,data)
-                local r=row(50); local sliderLabel=label(r,data.Text,11); sliderLabel.Size=UDim2.new(.7,0,0,22)
+                local r=row(50); local sliderLabel=label(r,data.Text,12); sliderLabel.Size=UDim2.new(.7,0,0,22)
                 local valueLabel=label(r,"",11); valueLabel.Size=UDim2.new(.3,0,0,22); valueLabel.Position=UDim2.fromScale(.7,0); valueLabel.TextXAlignment=Enum.TextXAlignment.Right
                 local track=button(r,""); track:SetAttribute("NoHover",true); track.Size=UDim2.new(1,0,0,8); track.Position=UDim2.fromOffset(0,34)
                 local fill=make("Frame",{BackgroundColor3=colors.accent,BorderSizePixel=0,Size=UDim2.fromScale(0,1)},track); round(fill,8)
@@ -271,7 +281,7 @@ local function createCloverLibrary()
                 o.render(); return o
             end
             function g:AddDropdown(id,data)
-                local r=row(57); label(r,data.Text,11)
+                local r=row(57); label(r,data.Text,12)
                 local b=button(r,""); b.Position=UDim2.fromOffset(0,25); b.Size=UDim2.new(1,0,0,29)
                 local list=make("ScrollingFrame",{Visible=false,BackgroundColor3=colors.field,BorderSizePixel=0,
                     Size=UDim2.new(1,0,0,160),CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,
@@ -317,6 +327,7 @@ local function createCloverLibrary()
         end
         local result={}
         function result:AddTab(name)
+            for _,existing in ipairs(pages) do if existing.name==name then return existing.tab end end
             local tabButton=button(nav,name); tabButton:SetAttribute("NoHover",true); tabButton.Size=UDim2.new(1,0,0,36); tabButton.TextXAlignment=Enum.TextXAlignment.Left
             make("UIPadding",{PaddingLeft=UDim.new(0,12)},tabButton)
             local page=make("ScrollingFrame",{BackgroundTransparency=1,BorderSizePixel=0,ClipsDescendants=true,
@@ -348,6 +359,7 @@ local function createCloverLibrary()
             connect(tabButton.Activated,activate)
             if first then first=false; activate() else tabButton.BackgroundColor3=colors.panel; tabButton.TextColor3=colors.muted end
             local tab={}
+            entry.tab=tab
             function tab:AddLeftGroupbox(title) return group(columns[1],title) end
             function tab:AddRightGroupbox(title) return group(columns[2],title) end
             return tab
@@ -719,13 +731,16 @@ function runtime.configureUI(library,window,toggles,options)
     slider(combat,"HubManaLow","Rest below mana (%)","ManaLow",1,60)
     slider(combat,"HubManaResume","Resume above mana (%)","ManaResume",20,100)
     combat:AddLabel("Mana rest uses a live Mana value with a known maximum. Missing mana data leaves combat enabled.",true)
-    local health=tab:AddRightGroupbox("Survival")
+    local survival=window:AddTab("Survival")
+    local health=survival:AddLeftGroupbox("Automatic resets")
+    local survivalInfo=survival:AddRightGroupbox("Live detection")
+    survivalInfo:AddLabel("Reset controls are collected here. The live reading below confirms whether detection is available.",true)
     toggle(health,"HubReset","Auto reset at low HP","AutoReset")
     slider(health,"HubResetHP","Reset HP (%)","ResetHP",1,90)
     toggle(health,"HubStaminaReset","Auto reset at low stamina","AutoStaminaReset")
     slider(health,"HubResetStamina","Reset stamina (%)","ResetStamina",1,50)
-    local staminaLabel=health:AddLabel("Stamina: waiting for current / maximum values",true)
-    health:AddLabel("Stamina reset starts enabled at 10%. Waits 15 seconds after spawning and 1 second below the threshold.",true)
+    local staminaLabel=survivalInfo:AddLabel("Stamina: waiting for current / maximum values",true)
+    survivalInfo:AddLabel("Stamina reset starts enabled at 10%. Waits 15 seconds after spawning and 1 second below the threshold.",true)
     local visuals=window:AddTab("Visuals"):AddLeftGroupbox("ESP")
     toggle(visuals,"HubESPMobs","Mob / boss ESP","ESPMobs")
     toggle(visuals,"HubESPPlayers","Player ESP","ESPPlayers")
