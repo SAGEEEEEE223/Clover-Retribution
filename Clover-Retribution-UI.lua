@@ -1,3 +1,835 @@
+-- Clover Hub: area profiles, shared HUD, ESP, collection and diagnostics.
+local env=getgenv()
+if type(env.StopCloverHub)=="function" then pcall(env.StopCloverHub) end
+local player=game:GetService("Players").LocalPlayer
+local runtime={}
+env.CloverRuntime=runtime
+local function createCloverLibrary()
+    local UIS = game:GetService("UserInputService")
+    local Tween = game:GetService("TweenService")
+    local toggles, options, connections = {}, {}, {}
+    local lib = {Unloaded = false, ToggleKeybind = false :: any, CleanupCallbacks={}}
+    local colors = {bg = Color3.fromRGB(13,15,14), panel = Color3.fromRGB(21,23,21),
+        field = Color3.fromRGB(34,37,32), line = Color3.fromRGB(49,53,44),
+        text = Color3.fromRGB(239,242,231), muted = Color3.fromRGB(155,162,147),
+        accent = Color3.fromRGB(190,219,65)}
+    local function make(class, props, parent)
+        local object = Instance.new(class)
+        for key, value in pairs(props or {}) do object[key] = value end
+        object.Parent = parent
+        return object
+    end
+    local function connect(signal, callback)
+        local c = signal:Connect(callback)
+        table.insert(connections, c)
+        return c
+    end
+    local function round(object, radius)
+        make("UICorner", {CornerRadius = UDim.new(0, radius or 10)}, object)
+    end
+    local function label(parent, text, size)
+        return make("TextLabel", {BackgroundTransparency=1, Text=text,
+            TextColor3=colors.text, Font=Enum.Font.Gotham, TextSize=size or 13,
+            TextXAlignment=Enum.TextXAlignment.Left, Size=UDim2.new(1,0,0,22)}, parent)
+    end
+    local function button(parent, text)
+        local b = make("TextButton", {Text=text, BackgroundColor3=colors.field,
+            TextColor3=colors.text, Font=Enum.Font.Gotham, TextSize=12,
+            AutoButtonColor=false, BorderSizePixel=0, TextTruncate=Enum.TextTruncate.AtEnd}, parent)
+        round(b, 8)
+        local hoverColor
+        b.MouseEnter:Connect(function()
+            if b:GetAttribute("NoHover") then return end
+            hoverColor=b.BackgroundColor3
+            Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=hoverColor:Lerp(colors.text,.055)}):Play()
+        end)
+        b.MouseLeave:Connect(function()
+            if hoverColor and not b:GetAttribute("NoHover") then
+                Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=hoverColor}):Play()
+            end
+        end)
+        return b
+    end
+    local function observable(initial)
+        local o = {Value=initial}
+        function o:OnChanged(callback) self.callback=callback; callback(self.Value) end
+        function o:SetValue(value)
+            if self.Value == value then return end
+            self.Value=value
+            if self.render then self.render() end
+            if self.callback then self.callback(value) end
+        end
+        return o
+    end
+    local screen = make("ScreenGui", {Name="CloverDashboard", ResetOnSpawn=false,
+        ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=80}, player:WaitForChild("PlayerGui"))
+    local window
+    local wantedVisible=true
+    local visibilitySerial=0
+    local windowTween
+    function lib:Toggle()
+        if not window or self.Unloaded then return end
+        wantedVisible=not wantedVisible
+        visibilitySerial+=1
+        local serial=visibilitySerial
+        if windowTween then windowTween:Cancel() end
+        if wantedVisible then window.Visible=true end
+        windowTween=Tween:Create(window,TweenInfo.new(.16,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
+            {GroupTransparency=wantedVisible and 0 or 1})
+        windowTween.Completed:Once(function()
+            if serial==visibilitySerial and not wantedVisible and not self.Unloaded then window.Visible=false end
+        end)
+        windowTween:Play()
+    end
+    function lib:OnUnload(callback) self.unloadCallback=callback end
+    function lib:RegisterCleanup(callback) table.insert(self.CleanupCallbacks,callback) end
+    function lib:Unload()
+        if self.Unloaded then return end
+        self.Unloaded=true
+        for _, c in ipairs(connections) do c:Disconnect() end
+        for _,callback in ipairs(self.CleanupCallbacks) do pcall(callback) end
+        screen:Destroy()
+        if self.unloadCallback then self.unloadCallback() end
+    end
+    function lib:CreateWindow(settings)
+        window=make("CanvasGroup", {GroupTransparency=0,Size=UDim2.fromOffset(820,550), AnchorPoint=Vector2.new(.5,.5),
+            Position=UDim2.fromScale(.5,.5), BackgroundColor3=colors.bg, BorderSizePixel=0}, screen)
+        round(window,14)
+        make("UIStroke", {Color=colors.line, Thickness=1}, window)
+        local scale=make("UIScale", {}, window)
+        local function resize()
+            local camera=workspace.CurrentCamera
+            if camera then scale.Scale=math.min(1, (camera.ViewportSize.X-24)/820, (camera.ViewportSize.Y-24)/550) end
+        end
+        resize()
+        local viewportConnection
+        local function bindCamera()
+            if viewportConnection then viewportConnection:Disconnect() end
+            local camera=workspace.CurrentCamera
+            if camera then viewportConnection=connect(camera:GetPropertyChangedSignal("ViewportSize"), resize) end
+            resize()
+        end
+        bindCamera()
+        connect(workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
+        local sidebar=make("Frame", {BackgroundColor3=colors.panel, BorderSizePixel=0,
+            Position=UDim2.fromOffset(8,8), Size=UDim2.new(0,174,1,-16)}, window)
+        round(sidebar,10)
+        local brand=label(sidebar,"CLOVER",18)
+        brand.Position=UDim2.fromOffset(16,15); brand.TextColor3=colors.accent
+        local subtitle=label(sidebar,"RETRIBUTION  /  CONTROL",9)
+        subtitle.Position=UDim2.fromOffset(16,39); subtitle.TextColor3=colors.muted
+        local nav=make("ScrollingFrame", {BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,AutomaticCanvasSize=Enum.AutomaticSize.Y,CanvasSize=UDim2.new(), Position=UDim2.fromOffset(10,80),
+            Size=UDim2.new(1,-20,1,-134)}, sidebar)
+        make("UIListLayout", {Padding=UDim.new(0,7), SortOrder=Enum.SortOrder.LayoutOrder}, nav)
+        local hint=label(sidebar,"RightShift to show / hide",10)
+        hint.Position=UDim2.new(0,16,1,-34); hint.TextColor3=colors.muted
+        local header=label(window,"CONTROL CENTER",12)
+        header.Position=UDim2.fromOffset(200,16); header.Size=UDim2.new(1,-260,0,26)
+        header.TextColor3=colors.muted
+        local close=button(window,"×")
+        close.Position=UDim2.new(1,-44,0,14); close.Size=UDim2.fromOffset(28,28)
+        connect(close.Activated,function() self:Toggle() end)
+        local drag=make("TextButton", {Text="", BackgroundTransparency=1,
+            Position=UDim2.fromOffset(195,0), Size=UDim2.new(1,-250,0,45)},window)
+        local dragging, start, original
+        connect(drag.InputBegan,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+                dragging=true; start=input.Position; original=window.Position
+            end
+        end)
+        connect(UIS.InputEnded,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then dragging=false end
+        end)
+        connect(UIS.InputChanged,function(input)
+            if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
+                local delta=input.Position-start
+                window.Position=UDim2.new(original.X.Scale,original.X.Offset+delta.X,original.Y.Scale,original.Y.Offset+delta.Y)
+            end
+        end)
+        local pages, first={},true
+        local function group(parent,title)
+            local section=make("Frame", {BackgroundColor3=colors.panel, BorderSizePixel=0,
+                Size=UDim2.new(1,0,0,0), AutomaticSize=Enum.AutomaticSize.Y},parent)
+            round(section,12); make("UIStroke",{Color=colors.line},section)
+            make("UIPadding",{PaddingTop=UDim.new(0,12),PaddingBottom=UDim.new(0,12),
+                PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)},section)
+            make("UIListLayout",{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder},section)
+            local titleLabel=label(section,string.upper(title),10); titleLabel.TextColor3=colors.muted
+            local g={}
+            local order=0
+            local function row(height)
+                order+=1
+                return make("Frame",{BackgroundTransparency=1,Size=UDim2.new(1,0,0,height or 34),LayoutOrder=order},section)
+            end
+            function g:AddLabel(text,wrap)
+                local r=row(wrap and 48 or 24)
+                local l=label(r,text,11); l.Size=UDim2.fromScale(1,1); l.TextWrapped=true; l.TextColor3=colors.muted
+                local result={}
+                function result:SetText(text) l.Text=tostring(text) end
+                function result:AddKeyPicker(id,data)
+                    local o=observable(data.Default); options[id]=o
+                    local b=button(r,tostring(o.Value)); b.Size=UDim2.fromOffset(94,24); b.Position=UDim2.new(1,-94,0,0)
+                    local listening=false
+                    o.render=function() b.Text=tostring(o.Value); hint.Text=tostring(o.Value).." to show / hide" end
+                    connect(b.Activated,function() listening=true; b.Text="Press a key" end)
+                    connect(UIS.InputBegan,function(input,processed)
+                        if input.UserInputType~=Enum.UserInputType.Keyboard then return end
+                        if listening then listening=false; o:SetValue(input.KeyCode.Name); return end
+                        if not processed and not UIS:GetFocusedTextBox() and lib.ToggleKeybind==o and input.KeyCode.Name==o.Value then lib:Toggle() end
+                    end)
+                    o.render(); return o
+                end
+                return result
+            end
+            function g:AddButton(text,callback)
+                if type(text)=="table" then callback=text.Func; text=text.Text end
+                local b=button(row(32),text); b.Size=UDim2.fromScale(1,1)
+                connect(b.Activated,callback); return b
+            end
+            function g:AddToggle(id,data)
+                local r=row(); local l=label(r,data.Text); l.Size=UDim2.new(1,-50,1,0)
+                local b=button(r,""); b:SetAttribute("NoHover",true); b.Size=UDim2.fromOffset(38,22); b.Position=UDim2.new(1,-38,.5,-11)
+                local dot=make("Frame",{Size=UDim2.fromOffset(16,16),BackgroundColor3=colors.text,BorderSizePixel=0},b); round(dot,20)
+                local o=observable(data.Default==true); toggles[id]=o
+                o.render=function()
+                    b.BackgroundColor3=o.Value and colors.accent or colors.field
+                    Tween:Create(dot,TweenInfo.new(.12),{Position=UDim2.fromOffset(o.Value and 19 or 3,3)}):Play()
+                end
+                o.render(); connect(b.Activated,function() o:SetValue(not o.Value) end); return o
+            end
+            function g:AddInput(id,data)
+                local r=row(57); label(r,data.Text,11)
+                local b=make("TextBox",{Text=tostring(data.Default or ""),PlaceholderText=data.Placeholder or "Enter value",
+                    ClearTextOnFocus=false,BackgroundColor3=colors.field,TextColor3=colors.text,
+                    PlaceholderColor3=colors.muted,Font=Enum.Font.Gotham,TextSize=12,
+                    Size=UDim2.new(1,0,0,29),Position=UDim2.fromOffset(0,25),BorderSizePixel=0},r); round(b,8)
+                local o=observable(tostring(data.Default or "")); options[id]=o
+                o.render=function() if b.Text~=tostring(o.Value) then b.Text=tostring(o.Value) end end
+                local function changed() o:SetValue(b.Text) end
+                if data.Finished==false then connect(b:GetPropertyChangedSignal("Text"),changed) else connect(b.FocusLost,changed) end
+                return o
+            end
+            function g:AddSlider(id,data)
+                local r=row(50); local sliderLabel=label(r,data.Text,11); sliderLabel.Size=UDim2.new(.7,0,0,22)
+                local valueLabel=label(r,"",11); valueLabel.Size=UDim2.new(.3,0,0,22); valueLabel.Position=UDim2.fromScale(.7,0); valueLabel.TextXAlignment=Enum.TextXAlignment.Right
+                local track=button(r,""); track:SetAttribute("NoHover",true); track.Size=UDim2.new(1,0,0,8); track.Position=UDim2.fromOffset(0,34)
+                local fill=make("Frame",{BackgroundColor3=colors.accent,BorderSizePixel=0,Size=UDim2.fromScale(0,1)},track); round(fill,8)
+                local o=observable(data.Default or data.Min); options[id]=o
+                o.render=function()
+                    valueLabel.Text=tostring(o.Value)
+                    Tween:Create(fill,TweenInfo.new(.09),{Size=UDim2.fromScale(math.clamp((o.Value-data.Min)/(data.Max-data.Min),0,1),1)}):Play()
+                end
+                local sliding=false
+                local function update(x)
+                    local ratio=math.clamp((x-track.AbsolutePosition.X)/track.AbsoluteSize.X,0,1)
+                    local factor=10^(data.Rounding or 0)
+                    o:SetValue(math.floor((data.Min+ratio*(data.Max-data.Min))*factor+.5)/factor)
+                end
+                connect(track.InputBegan,function(input)
+                    if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then sliding=true; update(input.Position.X) end
+                end)
+                connect(UIS.InputChanged,function(input)
+                    if sliding and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then update(input.Position.X) end
+                end)
+                connect(UIS.InputEnded,function(input)
+                    if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then sliding=false end
+                end)
+                o.render(); return o
+            end
+            function g:AddDropdown(id,data)
+                local r=row(57); label(r,data.Text,11)
+                local b=button(r,""); b.Position=UDim2.fromOffset(0,25); b.Size=UDim2.new(1,0,0,29)
+                local list=make("ScrollingFrame",{Visible=false,BackgroundColor3=colors.field,BorderSizePixel=0,
+                    Size=UDim2.new(1,0,0,160),CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,
+                    ScrollBarThickness=3,LayoutOrder=order},section); round(list,8)
+                make("UIListLayout",{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},list)
+                local initial=data.Default
+                if data.Multi then
+                    local selected={}
+                    if type(initial)=="table" then for k,v in pairs(initial) do if type(k)=="number" then selected[v]=true elseif v then selected[k]=true end end end
+                    initial=selected
+                elseif type(initial)=="number" then initial=(data.Values or {})[initial] end
+                local o=observable(initial); o.Values=table.clone(data.Values or {}); options[id]=o
+                local choices={}
+                function o:Display()
+                    if data.Multi then
+                        local names={}; for name,v in pairs(self.Value or {}) do if v then table.insert(names,name) end end
+                        table.sort(names); b.Text=#names==0 and "Select...  ▾" or (#names==1 and names[1].."  ▾" or tostring(#names).." selected  ▾")
+                    else b.Text=tostring(self.Value or "Select...").."  ▾" end
+                    for name,choice in pairs(choices) do
+                        local selected=data.Multi and (self.Value or {})[name] or self.Value==name
+                        choice.TextColor3=selected and colors.accent or colors.text
+                    end
+                end
+                o.render=function() o:Display() end
+                function o:SetValues(values)
+                    self.Values=table.clone(values or self.Values)
+                    for _,child in ipairs(list:GetChildren()) do if child:IsA("TextButton") then child:Destroy() end end
+                    choices={}
+                    for index,name in ipairs(self.Values) do
+                        local choice=button(list,tostring(name)); choice.Size=UDim2.new(1,-6,0,28); choice.LayoutOrder=index; choices[name]=choice
+                        -- Instance-owned connection is released when this choice is destroyed.
+                        choice.Activated:Connect(function()
+                            if data.Multi then local selected=table.clone(self.Value or {}); selected[name]=not selected[name] or nil; self:SetValue(selected)
+                            else self:SetValue(name); list.Visible=false end
+                        end)
+                    end
+                    self:Display()
+                end
+                o:SetValues(o.Values); connect(b.Activated,function() list.Visible=not list.Visible end)
+                return o
+            end
+            return g
+        end
+        local result={}
+        function result:AddTab(name)
+            local tabButton=button(nav,name); tabButton:SetAttribute("NoHover",true); tabButton.Size=UDim2.new(1,0,0,36); tabButton.TextXAlignment=Enum.TextXAlignment.Left
+            make("UIPadding",{PaddingLeft=UDim.new(0,12)},tabButton)
+            local page=make("ScrollingFrame",{BackgroundTransparency=1,BorderSizePixel=0,ClipsDescendants=true,
+                Position=UDim2.fromOffset(200,52),Size=UDim2.new(1,-218,1,-68),ScrollBarThickness=3,
+                ScrollBarImageColor3=colors.accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=first},window)
+            local columns={}
+            for i=1,2 do
+                columns[i]=make("Frame",{BackgroundTransparency=1,Position=UDim2.new((i-1)*.5,(i-1)*6,0,2),
+                    Size=UDim2.new(.5,-8,0,0),AutomaticSize=Enum.AutomaticSize.Y},page)
+                make("UIListLayout",{Padding=UDim.new(0,14),SortOrder=Enum.SortOrder.LayoutOrder},columns[i])
+            end
+                        local indicator=make("Frame",{BackgroundColor3=colors.accent,BorderSizePixel=0,
+                Position=UDim2.fromOffset(0,9),Size=UDim2.fromOffset(3,18),Visible=first},tabButton)
+            round(indicator,3)
+            local entry={page=page,button=tabButton,name=name,indicator=indicator}; table.insert(pages,entry)
+            local function activate()
+                header.Text=string.upper(name).."  /  CLOVER RETRIBUTION"
+                for _,item in ipairs(pages) do
+                    local selected=item==entry; item.page.Visible=selected; item.indicator.Visible=selected
+                    if selected then
+                        item.page.Position=UDim2.fromOffset(208,52)
+                        Tween:Create(item.page,TweenInfo.new(.14,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=UDim2.fromOffset(200,52)}):Play()
+                    end
+                    Tween:Create(item.button,TweenInfo.new(.14),{BackgroundColor3=selected and Color3.fromRGB(39,46,24) or colors.panel}):Play()
+                    item.button.TextColor3=selected and colors.accent or colors.muted
+                end
+            end
+            connect(tabButton.Activated,activate)
+            if first then first=false; activate() else tabButton.BackgroundColor3=colors.panel; tabButton.TextColor3=colors.muted end
+            local tab={}
+            function tab:AddLeftGroupbox(title) return group(columns[1],title) end
+            function tab:AddRightGroupbox(title) return group(columns[2],title) end
+            return tab
+        end
+        runtime.configureUI(lib,result,toggles,options)
+        return result
+    end
+    function lib:CreateHUD(settings)
+        local hud=make("CanvasGroup",{Name="StatusHUD",BackgroundColor3=colors.panel,BorderSizePixel=0,
+            Position=UDim2.fromOffset(24,110),Size=UDim2.fromOffset(284,306),GroupTransparency=1,
+            Visible=settings.Visible~=false},screen)
+        round(hud,13)
+        make("UIStroke",{Color=colors.line,Thickness=1},hud)
+        local hudScale=make("UIScale",{},hud)
+        local function fitHUD()
+            local camera=workspace.CurrentCamera
+            if camera then hudScale.Scale=math.max(.55,math.min(1,(camera.ViewportSize.X-32)/284,(camera.ViewportSize.Y-40)/306)) end
+        end
+        local hudViewportConnection
+        local function bindHUDCamera()
+            if hudViewportConnection then hudViewportConnection:Disconnect() end
+            local camera=workspace.CurrentCamera
+            if camera then hudViewportConnection=connect(camera:GetPropertyChangedSignal("ViewportSize"),fitHUD) end
+            fitHUD()
+        end
+        bindHUDCamera(); connect(workspace:GetPropertyChangedSignal("CurrentCamera"),bindHUDCamera)
+        local brand=label(hud,"CLOVER",14); brand.Font=Enum.Font.GothamBold
+        brand.TextColor3=colors.accent; brand.Position=UDim2.fromOffset(14,10); brand.Size=UDim2.fromOffset(130,24)
+        local titleDrag=make("TextButton",{Text="",BackgroundTransparency=1,Position=UDim2.fromOffset(0,0),Size=UDim2.new(1,-38,0,42)},hud)
+        local collapse=button(hud,"−"); collapse.Size=UDim2.fromOffset(24,24); collapse.Position=UDim2.new(1,-35,0,10)
+        local separator=make("Frame",{BackgroundColor3=colors.line,BorderSizePixel=0,Position=UDim2.fromOffset(12,42),Size=UDim2.new(1,-24,0,1)},hud)
+        local content=make("Frame",{BackgroundTransparency=1,Position=UDim2.fromOffset(14,52),Size=UDim2.new(1,-28,0,240)},hud)
+        local fields={}
+        for i,entry in ipairs({{"Mode","Mode"},{"Target","Target"},{"Skills","Skills"},{"Time","Session"}}) do
+            local name=label(content,entry[2],11); name.TextColor3=colors.muted
+            name.Position=UDim2.fromOffset(0,(i-1)*25); name.Size=UDim2.new(.32,0,0,22)
+            local value=label(content,"—",11); value.Position=UDim2.new(.32,0,0,(i-1)*25)
+            value.Size=UDim2.new(.68,0,0,22); value.TextXAlignment=Enum.TextXAlignment.Right; value.TextTruncate=Enum.TextTruncate.AtEnd
+            fields[entry[1]]=value
+        end
+        local function bar(title,y,color)
+            local text=label(content,title,11); text.Position=UDim2.fromOffset(0,y); text.Size=UDim2.new(1,0,0,20)
+            local track=make("Frame",{BackgroundColor3=colors.field,BorderSizePixel=0,Position=UDim2.fromOffset(0,y+24),Size=UDim2.new(1,0,0,5)},content); round(track,5)
+            local fill=make("Frame",{BackgroundColor3=color,BorderSizePixel=0,Size=UDim2.fromScale(0,1)},track); round(fill,5)
+            return {text=text,fill=fill,fraction=-1}
+        end
+        local ownHealth=bar("Your HP",104,colors.accent)
+        local enemyHealth=bar("Target HP",143,Color3.fromRGB(125,166,242))
+        local pause=button(content,"Pause farm"); pause.Position=UDim2.fromOffset(0,193); pause.Size=UDim2.new(.5,-4,0,29)
+        local menu=button(content,"Open menu"); menu.Position=UDim2.new(.5,4,0,193); menu.Size=UDim2.new(.5,-4,0,29)
+        connect(pause.Activated,function() if settings.OnPause then settings.OnPause() end end)
+        connect(menu.Activated,function() if not wantedVisible then lib:Toggle() end end)
+        local dragging,dragStart,startPosition,touch
+        connect(titleDrag.InputBegan,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+                dragging=true; dragStart=input.Position; startPosition=hud.Position; touch=input
+            end
+        end)
+        connect(UIS.InputChanged,function(input)
+            if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input==touch) then
+                local delta=input.Position-dragStart
+                hud.Position=UDim2.new(startPosition.X.Scale,startPosition.X.Offset+delta.X,startPosition.Y.Scale,startPosition.Y.Offset+delta.Y)
+            end
+        end)
+        connect(UIS.InputEnded,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input==touch then dragging=false end
+        end)
+        local collapsed=false
+        connect(collapse.Activated,function()
+            collapsed=not collapsed; collapse.Text=collapsed and "+" or "−"
+            content.Visible=not collapsed; separator.Visible=not collapsed
+            Tween:Create(hud,TweenInfo.new(.16,Enum.EasingStyle.Quad),{Size=UDim2.fromOffset(284,collapsed and 44 or 306)}):Play()
+        end)
+        local hudTween
+        local hudVisibilitySerial=0
+        local result={}
+        function result:SetVisible(value)
+            hudVisibilitySerial+=1
+            local serial=hudVisibilitySerial
+            if hudTween then hudTween:Cancel() end
+            if value then hud.Visible=true end
+            hudTween=Tween:Create(hud,TweenInfo.new(.16),{GroupTransparency=value and 0 or 1})
+            hudTween.Completed:Once(function() if serial==hudVisibilitySerial and not value and not lib.Unloaded then hud.Visible=false end end)
+            hudTween:Play()
+        end
+        local function updateBar(item,title,health,maxHealth)
+            local fraction=maxHealth and maxHealth>0 and math.clamp(health/maxHealth,0,1) or 0
+            item.text.Text=maxHealth and maxHealth>0 and (title.."  "..math.floor(fraction*100+.5).."%") or title.."  —"
+            if math.abs(fraction-item.fraction)>.001 then
+                item.fraction=fraction
+                Tween:Create(item.fill,TweenInfo.new(.22,Enum.EasingStyle.Quad),{Size=UDim2.fromScale(fraction,1)}):Play()
+            end
+        end
+        function result:Update(data)
+            for key,field in pairs(fields) do
+                local nextText=tostring(data[key] or "—")
+                if field.Text~=nextText then field.Text=nextText end
+            end
+            pause.Text=data.Paused and "Resume farm" or "Pause farm"
+            updateBar(ownHealth,"Your HP",data.Health or 0,data.MaxHealth)
+            updateBar(enemyHealth,"Target HP",data.TargetHealth or 0,data.TargetMaxHealth)
+        end
+        result:SetVisible(settings.Visible~=false)
+        return result
+    end
+    return lib,toggles,options
+end
+
+-- Shared upgrades. Uses live objects and supplied game events; no guessed quest remotes.
+runtime.config=type(env.CloverHubConfig)=="table" and env.CloverHubConfig or {}
+env.CloverHubConfig=runtime.config
+for key,value in pairs({AutoM1=true,AttackInterval=.65,ManaRest=false,ManaLow=15,ManaResume=60,
+    ESPMobs=false,ESPPlayers=false,ESPNPCs=false,ESPRange=1500,AutoCollect=false,CollectRange=30,
+    CollectChests=true,CollectDrops=true,CollectResources=false,AutoQuestPrompt=false,
+    AutoReset=false,ResetHP=20,HUDEnabled=true,CameraDistance=14,CoffinAhead=5}) do
+    if runtime.config[key]==nil then runtime.config[key]=value end
+end
+runtime.profiles={}
+runtime.paused=false
+runtime.session=os.clock()
+runtime.switchSerial=0
+runtime.getRoot=function(model)
+    if not model or typeof(model)~="Instance" then return nil end
+    if model:IsA("BasePart") then return model end
+    local root=model:FindFirstChild("HumanoidRootPart")
+    if root and root:IsA("BasePart") then return root end
+    return model:IsA("Model") and model.PrimaryPart or nil
+end
+function runtime.detect()
+    local map=workspace:FindFirstChild("Map")
+    if (map and map:FindFirstChild("Arcanespiritrealm")) or workspace:FindFirstChild("Aetherion") then return "Arcane Dungeon" end
+    local e=workspace:FindFirstChild("Entities")
+    local sp=e and e:FindFirstChild("Spawns")
+    if sp and sp:FindFirstChild("VampireSoldierSpawn") then
+        for _,mob in ipairs((e:FindFirstChild("Enemies") or e):GetChildren()) do
+            if mob.Name=="Rogue Magic Knight" or mob.Name=="Mossback Mammoth" or mob.Name=="Alpha Crocodile" then return "Jungle" end
+        end
+        return "First Kingdom"
+    end
+    if map and (map:FindFirstChild("Jungle") or map:FindFirstChild("JungleMap")) then return "Jungle" end
+    if sp then
+        for _,part in ipairs(sp:GetChildren()) do
+            if part.Name:lower():find("crocodile",1,true) or part.Name:lower():find("mammoth",1,true) then return "Jungle" end
+        end
+    end
+    return "Explorer"
+end
+function runtime.mana()
+    local character=player.Character
+    local status=character and character:FindFirstChild("Status")
+    local value=status and status:FindFirstChild("Mana",true)
+    if not value or not (value:IsA("NumberValue") or value:IsA("IntValue")) then return nil end
+    local max=tonumber(value:GetAttribute("Max")) or tonumber(value:GetAttribute("MaxValue"))
+    local sibling=value.Parent and value.Parent:FindFirstChild("MaxMana")
+    if not max and sibling and (sibling:IsA("NumberValue") or sibling:IsA("IntValue")) then max=sibling.Value end
+    if not max or max<=0 then return nil end
+    return math.clamp(value.Value/max*100,0,100)
+end
+function runtime.allowCombat()
+    if runtime.paused then return false end
+    local mana=runtime.mana()
+    if not runtime.config.ManaRest or not mana then runtime.resting=false; return true end
+    local low=runtime.config.ManaLow
+    local resume=math.max(low+1,runtime.config.ManaResume)
+    if runtime.resting then runtime.resting=mana<resume else runtime.resting=mana<=low end
+    return not runtime.resting
+end
+function runtime.allowAttack(character)
+    if not runtime.config.AutoM1 or not runtime.allowCombat() then return false end
+    local status=character and character:FindFirstChild("Status")
+    local casting=status and status:FindFirstChild("Casting")
+    return not (casting and casting.Value)
+end
+function runtime.isEnemy(model)
+    if not model or not model:IsA("Model") or not model:FindFirstChildOfClass("Humanoid") then return false end
+    if game:GetService("Players"):GetPlayerFromCharacter(model) then return false end
+    local e=workspace:FindFirstChild("Entities")
+    local enemies=e and e:FindFirstChild("Enemies")
+    return (enemies and model:IsDescendantOf(enemies))
+        or game:GetService("CollectionService"):HasTag(model,"Enemy")
+        or (model:GetAttribute("CollisionGroup")=="Enemy" and model:GetAttribute("OverheadType")==nil)
+end
+function runtime.blocked(model)
+    if not model or typeof(model)~="Instance" then return true end
+    return game:GetService("CollectionService"):HasTag(model,"Untargetable") or model:GetAttribute("FightPause")==true
+end
+function runtime.cast(character,enemy,tool,isRunning)
+    if not runtime.allowCombat() or not isRunning() or not tool.Enabled then return false end
+    local humanoid=character:FindFirstChildOfClass("Humanoid")
+    local status=character:FindFirstChild("Status")
+    local casting=status and status:FindFirstChild("Casting")
+    local cooldown=status and status:FindFirstChild("Cooldown")
+    if not humanoid or (casting and casting.Value) then return false end
+    if tool.Parent~=character then humanoid:EquipTool(tool); task.wait(.18) end
+    if tool.Parent~=character or player.Character~=character or not isRunning() then return false end
+    local root=runtime.getRoot(character)
+    local enemyRoot=runtime.getRoot(enemy)
+    local camera=workspace.CurrentCamera
+    if not root or not enemyRoot or not camera then return false end
+    local priorType,priorCFrame,priorSubject=camera.CameraType,camera.CFrame,camera.CameraSubject
+    local ownCFrame=CFrame.lookAt(root.Position-root.CFrame.LookVector*runtime.config.CameraDistance+Vector3.new(0,5,0),enemyRoot.Position)
+    camera.CameraType=Enum.CameraType.Scriptable; camera.CFrame=ownCFrame
+    local function restore()
+        if workspace.CurrentCamera==camera and camera.CFrame==ownCFrame then
+            camera.CameraType=priorType; camera.CFrame=priorCFrame
+            if priorSubject and priorSubject.Parent then camera.CameraSubject=priorSubject end
+        end
+    end
+    local function aim(click)
+        local currentRoot=runtime.getRoot(enemy)
+        if not currentRoot or not isRunning() then return false end
+        local point=currentRoot.Position
+        if tool.Name=="Shadow Magic: Night Coffin" then
+            local delta=Vector3.new(point.X-root.Position.X,0,point.Z-root.Position.Z)
+            if delta.Magnitude>.01 then
+                point=root.Position+delta.Unit*math.min(delta.Magnitude,runtime.config.CoffinAhead)
+                local params=RaycastParams.new(); params.FilterType=Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances={character,enemy}
+                local ground=workspace:Raycast(point+Vector3.new(0,6,0),Vector3.new(0,-24,0),params)
+                if ground then point=ground.Position+Vector3.new(0,.1,0) end
+            end
+        end
+        local pixel,visible=camera:WorldToScreenPoint(point)
+        if not visible or game:GetService("UserInputService"):GetFocusedTextBox() then return false end
+        for _,object in ipairs(player.PlayerGui:GetGuiObjectsAtPosition(pixel.X,pixel.Y)) do
+            local gui=object:FindFirstAncestorOfClass("ScreenGui")
+            if gui and gui.Name=="CloverDashboard" then return false end
+        end
+        local vim=game:GetService("VirtualInputManager")
+        vim:SendMouseMoveEvent(pixel.X,pixel.Y,game)
+        if click then
+            local pressed=pcall(function() vim:SendMouseButtonEvent(pixel.X,pixel.Y,0,true,game,0) end)
+            if pressed then
+                task.wait(.08)
+                pcall(function() vim:SendMouseButtonEvent(pixel.X,pixel.Y,0,false,game,0) end)
+            end
+            return pressed
+        end
+        return true
+    end
+    pcall(aim,false); task.wait(); pcall(function() tool:Activate() end)
+    local deadline=os.clock()+1.5
+    local clicked=false
+    local confirmed=false
+    repeat
+        if (casting and casting.Value) or (cooldown and cooldown:FindFirstChild(tool.Name)) then confirmed=true; break end
+        if not clicked then clicked=true; pcall(aim,true) end
+        task.wait(.05)
+    until not isRunning() or player.Character~=character or os.clock()>=deadline
+    restore()
+    if not confirmed then warn("[CloverSkill] No cast confirmed: "..tool.Name) end
+    task.spawn(function()
+        task.wait(.3)
+        local deadline=os.clock()+30
+        while isRunning() and player.Character==character and casting and casting.Value and os.clock()<deadline do task.wait(.1) end
+        if isRunning() and player.Character==character and tool.Parent==character and not (casting and casting.Value) then
+            pcall(function() tool:Deactivate(); humanoid:UnequipTools() end)
+        end
+    end)
+    return confirmed
+end
+function runtime.stopProfiles()
+    for _,name in ipairs({"StopVampireFarm","StopJungleFarm","StopArcaneDungeonFarm"}) do
+        if type(env[name])=="function" then pcall(env[name]) end
+    end
+    if runtime.library and not runtime.library.Unloaded then runtime.library:Unload() end
+end
+function runtime.switch(profile)
+    if not runtime.profiles[profile] then warn("[CloverHub] Unknown profile: "..tostring(profile)); return end
+    runtime.switchSerial+=1
+    local serial=runtime.switchSerial
+    runtime.stopProfiles()
+    env.VampireFarmLaunchToken={}; env.JungleFarmLaunchToken={}; env.ArcaneDungeonLaunchToken={}
+    runtime.profile=profile; runtime.paused=false; runtime.resting=false; runtime.telemetry=nil
+    runtime.config.Profile=profile
+    task.spawn(function()
+        if serial~=runtime.switchSerial or env.CloverRuntime~=runtime then return end
+        local ok,err=xpcall(runtime.profiles[profile],debug.traceback)
+        if not ok and serial==runtime.switchSerial then
+            warn("[CloverHub] Profile startup failed: "..tostring(err))
+            runtime.stopProfiles()
+            local library=runtime.newUI()
+            local window=library:CreateWindow({Title="Clover Hub"})
+            local status=window:AddTab("Startup error"):AddLeftGroupbox("Profile unavailable")
+            status:AddLabel(tostring(err):sub(1,220),true)
+            status:AddLabel("Select another area in Hub. Missing objects may not be streamed in yet.",true)
+        end
+    end)
+end
+function runtime.configureUI(library,window,toggles,options)
+    runtime.library=library
+    local cfg=runtime.config
+    local tab=window:AddTab("Hub")
+    local areas=tab:AddLeftGroupbox("Area profile")
+    local combat=tab:AddRightGroupbox("Combat and mana")
+    areas:AddDropdown("HubProfile",{Text="Choose area",Values={"First Kingdom","Jungle","Arcane Dungeon","Explorer"},Default=runtime.profile or runtime.detect()})
+    areas:AddButton("Load selected area",function() runtime.switch(options.HubProfile.Value) end)
+    areas:AddButton("Detect current area",function() runtime.switch(runtime.detect()) end)
+    areas:AddButton("Pause / resume all",function() runtime.paused=not runtime.paused end)
+    areas:AddLabel("Only one area runs at a time. After travelling to another Roblox place, run the same loader again.",true)
+    local function toggle(box,id,text,key)
+        box:AddToggle(id,{Text=text,Default=cfg[key]})
+        toggles[id]:OnChanged(function(value) cfg[key]=value end)
+    end
+    local function slider(box,id,text,key,min,max,round)
+        box:AddSlider(id,{Text=text,Default=cfg[key],Min=min,Max=max,Rounding=round or 0})
+        options[id]:OnChanged(function(value) cfg[key]=value end)
+    end
+    toggle(combat,"HubM1","Auto M1", "AutoM1")
+    slider(combat,"HubM1Delay","Attack interval (seconds)","AttackInterval",.3,2,2)
+    toggle(combat,"HubManaRest","Rest attacks at low mana","ManaRest")
+    slider(combat,"HubManaLow","Rest below mana (%)","ManaLow",1,60)
+    slider(combat,"HubManaResume","Resume above mana (%)","ManaResume",20,100)
+    combat:AddLabel("Mana rest uses a live Mana value with a known maximum. Missing mana data leaves combat enabled.",true)
+    local health=tab:AddRightGroupbox("Survival")
+    toggle(health,"HubReset","Auto reset at low HP","AutoReset")
+    slider(health,"HubResetHP","Reset HP (%)","ResetHP",1,90)
+    local visuals=window:AddTab("Visuals"):AddLeftGroupbox("ESP")
+    toggle(visuals,"HubESPMobs","Mob / boss ESP","ESPMobs")
+    toggle(visuals,"HubESPPlayers","Player ESP","ESPPlayers")
+    toggle(visuals,"HubESPNPCs","NPC ESP","ESPNPCs")
+    slider(visuals,"HubESPRange","ESP distance","ESPRange",100,5000)
+    local collectTab=window:AddTab("Collection")
+    local collect=collectTab:AddLeftGroupbox("Nearby prompts")
+    toggle(collect,"HubCollect","Collect nearby enabled prompts","AutoCollect")
+    toggle(collect,"HubCollectChests","Chests","CollectChests")
+    toggle(collect,"HubCollectDrops","Drops / loot","CollectDrops")
+    toggle(collect,"HubCollectResources","Ores / flowers / resources","CollectResources")
+    slider(collect,"HubCollectRange","Search distance","CollectRange",5,100)
+    collect:AddLabel("Uses streamed prompts within their actual interaction range. No guessed inventory or pickup remotes.",true)
+    local quests=collectTab:AddRightGroupbox("Quest interactions")
+    quests:AddDropdown("HubQuestPrompt",{Text="Streamed quest NPC / prompt",Values={},AllowNull=true})
+    toggle(quests,"HubAutoQuestPrompt","Interact with selected nearby quest NPC","AutoQuestPrompt")
+    quests:AddLabel("Dialogue choices remain manual. This interacts with the selected NPC; it does not complete an entire story automatically.",true)
+    local info=window:AddTab("Progression"):AddLeftGroupbox("Official Trello notes")
+    info:AddLabel("Jungle access: level/prestige requirements and Orion's Mana Skin progression. Travel through the Wizard King.",true)
+    info:AddLabel("Maera introductions unlock village work. Village Standing must reach 100 before seal cards can drop.",true)
+    info:AddLabel("Seal Archive: cards need Seal Openers to activate their bonuses. Farming alone does not unlock the Archive.",true)
+    info:AddLabel("Arcane Dungeon handles its own boss prompt and invulnerable phases. Explorer targets live Enemy-tagged models in other areas.",true)
+    local settings=tab:AddLeftGroupbox("Settings")
+    toggle(settings,"HubHUD","Show live HUD","HUDEnabled")
+    settings:AddButton("Save settings",function()
+        if type(writefile)~="function" then warn("[CloverHub] writefile unavailable"); return end
+        local data={Hub=cfg,World=env.VampireFarmConfig,Jungle=env.CloverJungleConfig,Arcane=env.CloverArcaneConfig}
+        local ok,err=pcall(function() writefile("CloverHub-settings.json",game:GetService("HttpService"):JSONEncode(data)) end)
+        if ok then print("[CloverHub] Saved settings") else warn(err) end
+    end)
+    settings:AddButton("Print diagnostics",function()
+        local data=runtime.telemetry and runtime.telemetry() or {}
+        print("[CloverHub] profile="..tostring(runtime.profile).." detected="..runtime.detect().." target="..tostring(data.Target)
+            .." mana="..tostring(runtime.mana()).." paused="..tostring(runtime.paused).." place="..game.PlaceId)
+        for _,name in ipairs({"fireproximityprompt","readfile","writefile","isnetworkowner"}) do print("[CloverHub] "..name.."="..type(env[name])) end
+    end)
+    local annotations={}
+    local folder=Instance.new("Folder"); folder.Name="CloverESP"; folder.Parent=player.PlayerGui
+    library:RegisterCleanup(function() folder:Destroy() end)
+    local hud=library:CreateHUD({Visible=cfg.HUDEnabled,OnPause=function() runtime.paused=not runtime.paused end})
+    runtime.hud=hud
+    local seenHUD=cfg.HUDEnabled
+    local promptLast=setmetatable({},{__mode="k"})
+    local promptLookup={}
+    local resetCharacter
+    local resetSent=false
+    task.spawn(function()
+        while not library.Unloaded and env.CloverRuntime==runtime and runtime.library==library do
+            local data=runtime.telemetry and runtime.telemetry() or {}
+            local character=player.Character
+            local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+            local target=data.Model
+            local targetHumanoid=target and target:FindFirstChildOfClass("Humanoid")
+            local elapsed=math.floor(os.clock()-runtime.session)
+            local status=character and character:FindFirstChild("Status")
+            local casting=status and status:FindFirstChild("Casting")
+            hud:Update({Mode=runtime.paused and "Paused" or runtime.resting and "Mana rest" or runtime.profile,
+                Target=target and target.Name or data.Target or "Waiting…",Skills=casting and casting.Value and "Casting" or data.Skills or "Idle",
+                Time=string.format("%02d:%02d:%02d",math.floor(elapsed/3600),math.floor(elapsed/60)%60,elapsed%60),
+                Health=humanoid and humanoid.Health or 0,MaxHealth=humanoid and humanoid.MaxHealth,
+                TargetHealth=targetHumanoid and targetHumanoid.Health or 0,TargetMaxHealth=targetHumanoid and targetHumanoid.MaxHealth,Paused=runtime.paused})
+            if seenHUD~=cfg.HUDEnabled then seenHUD=cfg.HUDEnabled; hud:SetVisible(seenHUD) end
+            if character~=resetCharacter then resetCharacter=character; resetSent=false end
+            if cfg.AutoReset and not resetSent and humanoid and humanoid.MaxHealth>0 and humanoid.Health>0
+                and humanoid.Health/humanoid.MaxHealth*100<=cfg.ResetHP then
+                resetSent=true; pcall(function() humanoid.Health=0 end)
+            end
+            task.wait(.25)
+        end
+    end)
+    task.spawn(function()
+        while not library.Unloaded and env.CloverRuntime==runtime and runtime.library==library do
+            local root=runtime.getRoot(player.Character)
+            local wanted={}
+            if root and (cfg.ESPMobs or cfg.ESPPlayers or cfg.ESPNPCs) then
+                local candidates={}
+                for _,p in ipairs(game:GetService("Players"):GetPlayers()) do if p~=player and p.Character then candidates[p.Character]="Player" end end
+                local entities=workspace:FindFirstChild("Entities")
+                if entities then
+                    for _,hum in ipairs(entities:GetDescendants()) do if hum:IsA("Humanoid") then
+                        local model=hum.Parent
+                        if model and model:IsA("Model") and model~=player.Character then candidates[model]=runtime.isEnemy(model) and "Mob" or "NPC" end
+                    end end
+                end
+                for _,model in ipairs(game:GetService("CollectionService"):GetTagged("Enemy")) do if model:IsA("Model") then candidates[model]="Mob" end end
+                local sorted={}
+                for model,kind in pairs(candidates) do
+                    local modelRoot=runtime.getRoot(model)
+                    local enabled=kind=="Mob" and cfg.ESPMobs or kind=="Player" and cfg.ESPPlayers or kind=="NPC" and cfg.ESPNPCs
+                    if enabled and modelRoot then
+                        local distance=(modelRoot.Position-root.Position).Magnitude
+                        if distance<=cfg.ESPRange then table.insert(sorted,{Model=model,Root=modelRoot,Kind=kind,Distance=distance}) end
+                    end
+                end
+                table.sort(sorted,function(a,b) return a.Distance<b.Distance end)
+                for i=1,math.min(#sorted,31) do
+                    local item=sorted[i]; wanted[item.Model]=true
+                    local record=annotations[item.Model]
+                    if not record then
+                        local color=item.Kind=="Player" and Color3.fromRGB(125,166,242) or item.Kind=="NPC" and Color3.fromRGB(240,190,95) or Color3.fromRGB(190,219,65)
+                        local highlight=Instance.new("Highlight"); highlight.Adornee=item.Model; highlight.FillTransparency=.88; highlight.OutlineColor=color; highlight.Parent=folder
+                        local gui=Instance.new("BillboardGui"); gui.Adornee=item.Root; gui.Size=UDim2.fromOffset(220,44); gui.StudsOffset=Vector3.new(0,3,0); gui.AlwaysOnTop=true; gui.Parent=folder
+                        local text=Instance.new("TextLabel"); text.BackgroundTransparency=1; text.Size=UDim2.fromScale(1,1); text.Font=Enum.Font.Gotham; text.TextSize=11; text.TextColor3=color; text.TextStrokeTransparency=.3; text.Parent=gui
+                        record={Highlight=highlight,Gui=gui,Text=text}; annotations[item.Model]=record
+                    end
+                    record.Gui.Adornee=item.Root
+                    local hum=item.Model:FindFirstChildOfClass("Humanoid")
+                    record.Text.Text=item.Model.Name.."  "..math.floor(item.Distance).." studs"..(hum and ("\nHP "..math.floor(hum.Health).." / "..math.floor(hum.MaxHealth)) or "")
+                end
+            end
+            for model,record in pairs(annotations) do if not wanted[model] then record.Highlight:Destroy(); record.Gui:Destroy(); annotations[model]=nil end end
+            local questNames={}; promptLookup={}
+            if root then
+                local entities=workspace:FindFirstChild("Entities")
+                for _,object in ipairs(entities and entities:GetDescendants() or {}) do
+                    if object:IsA("ProximityPrompt") and object.Enabled then
+                        local part=object.Parent
+                        if part and part:IsA("Attachment") then part=part.Parent end
+                        if not (part and part:IsA("BasePart")) then part=object:FindFirstAncestorWhichIsA("Model"); part=runtime.getRoot(part) end
+                        if part then
+                            local descriptor=object:GetFullName():lower().." "..object.ObjectText:lower().." "..object.ActionText:lower()
+                            local distance=(root.Position-part.Position).Magnitude
+                            local isQuest=descriptor:find("quest",1,true)~=nil
+                            if isQuest then local label=object.ObjectText~="" and object.ObjectText or part.Parent.Name; label=label.." | "..object:GetFullName(); promptLookup[label]=object; table.insert(questNames,label) end
+                            local kind=descriptor:find("chest",1,true) and "Chest" or (descriptor:find("drop",1,true) or descriptor:find("loot",1,true)) and "Drop"
+                                or (descriptor:find("ore",1,true) or descriptor:find("flower",1,true) or descriptor:find("herb",1,true)) and "Resource"
+                            local enabled=kind=="Chest" and cfg.CollectChests or kind=="Drop" and cfg.CollectDrops or kind=="Resource" and cfg.CollectResources
+                            local selectedQuest=cfg.AutoQuestPrompt and options.HubQuestPrompt.Value and promptLookup[options.HubQuestPrompt.Value]==object
+                            local owner=object:GetAttribute("OwnerUserId")
+                            local available=object:GetAttribute("Locked")~=true and object:GetAttribute("Claimed")~=true and (not owner or owner==player.UserId)
+                            if not runtime.paused and available and not runtime.blocked((runtime.telemetry and runtime.telemetry().Model) or player.Character or part)
+                                and ((cfg.AutoCollect and enabled and distance<=cfg.CollectRange) or selectedQuest)
+                                and distance<=object.MaxActivationDistance and os.clock()-(promptLast[object] or -math.huge)>= (selectedQuest and 12 or 5)
+                                and type(fireproximityprompt)=="function" then
+                                promptLast[object]=os.clock(); pcall(fireproximityprompt,object)
+                            end
+                        end
+                    end
+                end
+            end
+            table.sort(questNames)
+            local signature=table.concat(questNames,"\n")
+            if signature~=options.HubQuestPrompt._signature then options.HubQuestPrompt._signature=signature; options.HubQuestPrompt:SetValues(questNames) end
+            task.wait(.8)
+        end
+    end)
+end
+function runtime.explorer()
+    local library,toggles,options=runtime.newUI()
+    local window=library:CreateWindow({Title="Clover Explorer"})
+    local box=window:AddTab("Explorer"):AddLeftGroupbox("Streamed enemies")
+    local enabled=false
+    box:AddToggle("ExplorerEnabled",{Text="Farm nearest streamed enemy",Default=false})
+    toggles.ExplorerEnabled:OnChanged(function(v) enabled=v end)
+    box:AddLabel("For areas without a dedicated route. No queueing, boss summoning, or automatic quest completion is assumed.",true)
+    local target
+    runtime.telemetry=function() return {Model=target,Skills="Use area profile for skills"} end
+    task.spawn(function()
+        local lastAttack=-math.huge
+        while not library.Unloaded and runtime.library==library do
+            local root=runtime.getRoot(player.Character)
+            local humanoid=player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+            if enabled and runtime.allowCombat() and root and humanoid and humanoid.Health>0 then
+                local best,distance
+                local candidates={}
+                local entities=workspace:FindFirstChild("Entities")
+                local enemies=entities and entities:FindFirstChild("Enemies")
+                for _,model in ipairs(enemies and enemies:GetChildren() or {}) do candidates[model]=true end
+                for _,model in ipairs(game:GetService("CollectionService"):GetTagged("Enemy")) do candidates[model]=true end
+                for model in pairs(candidates) do
+                    local hum=model:IsA("Model") and model:FindFirstChildOfClass("Humanoid")
+                    local mobRoot=runtime.getRoot(model)
+                    if hum and hum.Health>0 and mobRoot and not runtime.blocked(model) then
+                        local d=(root.Position-mobRoot.Position).Magnitude
+                        if not distance or d<distance then best=model; distance=d end
+                    end
+                end
+                target=best
+                if target then
+                    local mobRoot=runtime.getRoot(target)
+                    local position=(mobRoot.CFrame*CFrame.new(0,0,5)).Position
+                    root.CFrame=CFrame.lookAt(position,mobRoot.Position); root.AssemblyLinearVelocity=Vector3.zero
+                    if runtime.allowAttack(player.Character) and os.clock()-lastAttack>=runtime.config.AttackInterval then
+                        local package=game.ReplicatedStorage:FindFirstChild("ReplicatedPackage")
+                        local action=package and package:FindFirstChild("Remotes") and package.Remotes:FindFirstChild("action")
+                        if action and action:IsA("RemoteEvent") then
+                            lastAttack=os.clock()
+                            local ok,err=pcall(function() action:FireServer("M1",{password="Spirit"}) end)
+                            if not ok then warn("[CloverExplorer] M1 failed: "..tostring(err)) end
+                        end
+                    end
+                end
+            else target=nil end
+            task.wait(.15)
+        end
+    end)
+end
+
+runtime.newUI=function() return createCloverLibrary() end
+runtime.profiles["First Kingdom"]=function()
 print("[CloverStartup] Starting camera, skill, and health update")
 local env = getgenv()
 local savedConfig = type(env.VampireFarmConfig) == "table"
@@ -32,10 +864,10 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 -- Input handling belongs to the UI adapter.
 local player = Players.LocalPlayer
-local entities = workspace:WaitForChild("Entities")
-local enemies = entities:WaitForChild("Enemies")
-local spawns = entities:WaitForChild("Spawns")
-local spawn = spawns:WaitForChild("VampireSoldierSpawn")
+local entities = workspace:WaitForChild("Entities",15); assert(entities,"Entities not streamed")
+local enemies = entities:WaitForChild("Enemies",15); assert(enemies,"Enemies not streamed")
+local spawns = entities:WaitForChild("Spawns",15); assert(spawns,"Spawns not streamed; choose Explorer or Arcane Dungeon")
+local spawn = spawns:FindFirstChild("VampireSoldierSpawn")
 local action = game:GetService("ReplicatedStorage")
     :WaitForChild("ReplicatedPackage")
     :WaitForChild("Remotes")
@@ -51,7 +883,7 @@ for _, entry in ipairs(spellCatalog:GetDescendants()) do
     end
 end
 
-local ATTACK_INTERVAL = 0.65
+-- Attack interval belongs to the shared Hub controls.
 local SKILL_RETRY_INTERVAL = 1.5
 local DEFAULT_FOLLOW_DISTANCE = 5
 local DEFAULT_KILL_THRESHOLD_PERCENT = 89
@@ -257,419 +1089,7 @@ env.VampireFarmConfig.GolemKillThresholdPercent = math.clamp(
 end
 
 -- Clover UI: local, self-contained interface adapter.
-local function createCloverLibrary()
-    local UIS = game:GetService("UserInputService")
-    local Tween = game:GetService("TweenService")
-    local toggles, options, connections = {}, {}, {}
-    local lib = {Unloaded = false, ToggleKeybind = false :: any}
-    local colors = {bg = Color3.fromRGB(13,15,14), panel = Color3.fromRGB(21,23,21),
-        field = Color3.fromRGB(34,37,32), line = Color3.fromRGB(49,53,44),
-        text = Color3.fromRGB(239,242,231), muted = Color3.fromRGB(155,162,147),
-        accent = Color3.fromRGB(190,219,65)}
-    local function make(class, props, parent)
-        local object = Instance.new(class)
-        for key, value in pairs(props or {}) do object[key] = value end
-        object.Parent = parent
-        return object
-    end
-    local function connect(signal, callback)
-        local c = signal:Connect(callback)
-        table.insert(connections, c)
-        return c
-    end
-    local function round(object, radius)
-        make("UICorner", {CornerRadius = UDim.new(0, radius or 10)}, object)
-    end
-    local function label(parent, text, size)
-        return make("TextLabel", {BackgroundTransparency=1, Text=text,
-            TextColor3=colors.text, Font=Enum.Font.Gotham, TextSize=size or 13,
-            TextXAlignment=Enum.TextXAlignment.Left, Size=UDim2.new(1,0,0,22)}, parent)
-    end
-    local function button(parent, text)
-        local b = make("TextButton", {Text=text, BackgroundColor3=colors.field,
-            TextColor3=colors.text, Font=Enum.Font.Gotham, TextSize=12,
-            AutoButtonColor=false, BorderSizePixel=0, TextTruncate=Enum.TextTruncate.AtEnd}, parent)
-        round(b, 8)
-        local hoverColor
-        b.MouseEnter:Connect(function()
-            if b:GetAttribute("NoHover") then return end
-            hoverColor=b.BackgroundColor3
-            Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=hoverColor:Lerp(colors.text,.055)}):Play()
-        end)
-        b.MouseLeave:Connect(function()
-            if hoverColor and not b:GetAttribute("NoHover") then
-                Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=hoverColor}):Play()
-            end
-        end)
-        return b
-    end
-    local function observable(initial)
-        local o = {Value=initial}
-        function o:OnChanged(callback) self.callback=callback; callback(self.Value) end
-        function o:SetValue(value)
-            if self.Value == value then return end
-            self.Value=value
-            if self.render then self.render() end
-            if self.callback then self.callback(value) end
-        end
-        return o
-    end
-    local screen = make("ScreenGui", {Name="CloverDashboard", ResetOnSpawn=false,
-        ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=80}, player:WaitForChild("PlayerGui"))
-    local window
-    local wantedVisible=true
-    local visibilitySerial=0
-    local windowTween
-    function lib:Toggle()
-        if not window or self.Unloaded then return end
-        wantedVisible=not wantedVisible
-        visibilitySerial+=1
-        local serial=visibilitySerial
-        if windowTween then windowTween:Cancel() end
-        if wantedVisible then window.Visible=true end
-        windowTween=Tween:Create(window,TweenInfo.new(.16,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
-            {GroupTransparency=wantedVisible and 0 or 1})
-        windowTween.Completed:Once(function()
-            if serial==visibilitySerial and not wantedVisible and not self.Unloaded then window.Visible=false end
-        end)
-        windowTween:Play()
-    end
-    function lib:OnUnload(callback) self.unloadCallback=callback end
-    function lib:Unload()
-        if self.Unloaded then return end
-        self.Unloaded=true
-        for _, c in ipairs(connections) do c:Disconnect() end
-        screen:Destroy()
-        if self.unloadCallback then self.unloadCallback() end
-    end
-    function lib:CreateWindow(settings)
-        window=make("CanvasGroup", {GroupTransparency=0,Size=UDim2.fromOffset(820,550), AnchorPoint=Vector2.new(.5,.5),
-            Position=UDim2.fromScale(.5,.5), BackgroundColor3=colors.bg, BorderSizePixel=0}, screen)
-        round(window,14)
-        make("UIStroke", {Color=colors.line, Thickness=1}, window)
-        local scale=make("UIScale", {}, window)
-        local function resize()
-            local camera=workspace.CurrentCamera
-            if camera then scale.Scale=math.min(1, (camera.ViewportSize.X-24)/820, (camera.ViewportSize.Y-24)/550) end
-        end
-        resize()
-        local viewportConnection
-        local function bindCamera()
-            if viewportConnection then viewportConnection:Disconnect() end
-            local camera=workspace.CurrentCamera
-            if camera then viewportConnection=connect(camera:GetPropertyChangedSignal("ViewportSize"), resize) end
-            resize()
-        end
-        bindCamera()
-        connect(workspace:GetPropertyChangedSignal("CurrentCamera"), bindCamera)
-        local sidebar=make("Frame", {BackgroundColor3=colors.panel, BorderSizePixel=0,
-            Position=UDim2.fromOffset(8,8), Size=UDim2.new(0,174,1,-16)}, window)
-        round(sidebar,10)
-        local brand=label(sidebar,"CLOVER",18)
-        brand.Position=UDim2.fromOffset(16,15); brand.TextColor3=colors.accent
-        local subtitle=label(sidebar,"RETRIBUTION  /  CONTROL",9)
-        subtitle.Position=UDim2.fromOffset(16,39); subtitle.TextColor3=colors.muted
-        local nav=make("Frame", {BackgroundTransparency=1, Position=UDim2.fromOffset(10,80),
-            Size=UDim2.new(1,-20,1,-134)}, sidebar)
-        make("UIListLayout", {Padding=UDim.new(0,7), SortOrder=Enum.SortOrder.LayoutOrder}, nav)
-        local hint=label(sidebar,"RightShift to show / hide",10)
-        hint.Position=UDim2.new(0,16,1,-34); hint.TextColor3=colors.muted
-        local header=label(window,"CONTROL CENTER",12)
-        header.Position=UDim2.fromOffset(200,16); header.Size=UDim2.new(1,-260,0,26)
-        header.TextColor3=colors.muted
-        local close=button(window,"×")
-        close.Position=UDim2.new(1,-44,0,14); close.Size=UDim2.fromOffset(28,28)
-        connect(close.Activated,function() self:Toggle() end)
-        local drag=make("TextButton", {Text="", BackgroundTransparency=1,
-            Position=UDim2.fromOffset(195,0), Size=UDim2.new(1,-250,0,45)},window)
-        local dragging, start, original
-        connect(drag.InputBegan,function(input)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
-                dragging=true; start=input.Position; original=window.Position
-            end
-        end)
-        connect(UIS.InputEnded,function(input)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then dragging=false end
-        end)
-        connect(UIS.InputChanged,function(input)
-            if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
-                local delta=input.Position-start
-                window.Position=UDim2.new(original.X.Scale,original.X.Offset+delta.X,original.Y.Scale,original.Y.Offset+delta.Y)
-            end
-        end)
-        local pages, first={},true
-        local function group(parent,title)
-            local section=make("Frame", {BackgroundColor3=colors.panel, BorderSizePixel=0,
-                Size=UDim2.new(1,0,0,0), AutomaticSize=Enum.AutomaticSize.Y},parent)
-            round(section,12); make("UIStroke",{Color=colors.line},section)
-            make("UIPadding",{PaddingTop=UDim.new(0,12),PaddingBottom=UDim.new(0,12),
-                PaddingLeft=UDim.new(0,12),PaddingRight=UDim.new(0,12)},section)
-            make("UIListLayout",{Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder},section)
-            local titleLabel=label(section,string.upper(title),10); titleLabel.TextColor3=colors.muted
-            local g={}
-            local order=0
-            local function row(height)
-                order+=1
-                return make("Frame",{BackgroundTransparency=1,Size=UDim2.new(1,0,0,height or 34),LayoutOrder=order},section)
-            end
-            function g:AddLabel(text,wrap)
-                local r=row(wrap and 48 or 24)
-                local l=label(r,text,11); l.Size=UDim2.fromScale(1,1); l.TextWrapped=true; l.TextColor3=colors.muted
-                local result={}
-                function result:AddKeyPicker(id,data)
-                    local o=observable(data.Default); options[id]=o
-                    local b=button(r,tostring(o.Value)); b.Size=UDim2.fromOffset(94,24); b.Position=UDim2.new(1,-94,0,0)
-                    local listening=false
-                    o.render=function() b.Text=tostring(o.Value); hint.Text=tostring(o.Value).." to show / hide" end
-                    connect(b.Activated,function() listening=true; b.Text="Press a key" end)
-                    connect(UIS.InputBegan,function(input,processed)
-                        if input.UserInputType~=Enum.UserInputType.Keyboard then return end
-                        if listening then listening=false; o:SetValue(input.KeyCode.Name); return end
-                        if not processed and not UIS:GetFocusedTextBox() and lib.ToggleKeybind==o and input.KeyCode.Name==o.Value then lib:Toggle() end
-                    end)
-                    o.render(); return o
-                end
-                return result
-            end
-            function g:AddButton(text,callback)
-                if type(text)=="table" then callback=text.Func; text=text.Text end
-                local b=button(row(32),text); b.Size=UDim2.fromScale(1,1)
-                connect(b.Activated,callback); return b
-            end
-            function g:AddToggle(id,data)
-                local r=row(); local l=label(r,data.Text); l.Size=UDim2.new(1,-50,1,0)
-                local b=button(r,""); b:SetAttribute("NoHover",true); b.Size=UDim2.fromOffset(38,22); b.Position=UDim2.new(1,-38,.5,-11)
-                local dot=make("Frame",{Size=UDim2.fromOffset(16,16),BackgroundColor3=colors.text,BorderSizePixel=0},b); round(dot,20)
-                local o=observable(data.Default==true); toggles[id]=o
-                o.render=function()
-                    b.BackgroundColor3=o.Value and colors.accent or colors.field
-                    Tween:Create(dot,TweenInfo.new(.12),{Position=UDim2.fromOffset(o.Value and 19 or 3,3)}):Play()
-                end
-                o.render(); connect(b.Activated,function() o:SetValue(not o.Value) end); return o
-            end
-            function g:AddInput(id,data)
-                local r=row(57); label(r,data.Text,11)
-                local b=make("TextBox",{Text=tostring(data.Default or ""),PlaceholderText=data.Placeholder or "Enter value",
-                    ClearTextOnFocus=false,BackgroundColor3=colors.field,TextColor3=colors.text,
-                    PlaceholderColor3=colors.muted,Font=Enum.Font.Gotham,TextSize=12,
-                    Size=UDim2.new(1,0,0,29),Position=UDim2.fromOffset(0,25),BorderSizePixel=0},r); round(b,8)
-                local o=observable(tostring(data.Default or "")); options[id]=o
-                o.render=function() if b.Text~=tostring(o.Value) then b.Text=tostring(o.Value) end end
-                local function changed() o:SetValue(b.Text) end
-                if data.Finished==false then connect(b:GetPropertyChangedSignal("Text"),changed) else connect(b.FocusLost,changed) end
-                return o
-            end
-            function g:AddSlider(id,data)
-                local r=row(50); local sliderLabel=label(r,data.Text,11); sliderLabel.Size=UDim2.new(.7,0,0,22)
-                local valueLabel=label(r,"",11); valueLabel.Size=UDim2.new(.3,0,0,22); valueLabel.Position=UDim2.fromScale(.7,0); valueLabel.TextXAlignment=Enum.TextXAlignment.Right
-                local track=button(r,""); track:SetAttribute("NoHover",true); track.Size=UDim2.new(1,0,0,8); track.Position=UDim2.fromOffset(0,34)
-                local fill=make("Frame",{BackgroundColor3=colors.accent,BorderSizePixel=0,Size=UDim2.fromScale(0,1)},track); round(fill,8)
-                local o=observable(data.Default or data.Min); options[id]=o
-                o.render=function()
-                    valueLabel.Text=tostring(o.Value)
-                    Tween:Create(fill,TweenInfo.new(.09),{Size=UDim2.fromScale(math.clamp((o.Value-data.Min)/(data.Max-data.Min),0,1),1)}):Play()
-                end
-                local sliding=false
-                local function update(x)
-                    local ratio=math.clamp((x-track.AbsolutePosition.X)/track.AbsoluteSize.X,0,1)
-                    local factor=10^(data.Rounding or 0)
-                    o:SetValue(math.floor((data.Min+ratio*(data.Max-data.Min))*factor+.5)/factor)
-                end
-                connect(track.InputBegan,function(input)
-                    if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then sliding=true; update(input.Position.X) end
-                end)
-                connect(UIS.InputChanged,function(input)
-                    if sliding and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then update(input.Position.X) end
-                end)
-                connect(UIS.InputEnded,function(input)
-                    if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then sliding=false end
-                end)
-                o.render(); return o
-            end
-            function g:AddDropdown(id,data)
-                local r=row(57); label(r,data.Text,11)
-                local b=button(r,""); b.Position=UDim2.fromOffset(0,25); b.Size=UDim2.new(1,0,0,29)
-                local list=make("ScrollingFrame",{Visible=false,BackgroundColor3=colors.field,BorderSizePixel=0,
-                    Size=UDim2.new(1,0,0,160),CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,
-                    ScrollBarThickness=3,LayoutOrder=order},section); round(list,8)
-                make("UIListLayout",{Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder},list)
-                local initial=data.Default
-                if data.Multi then
-                    local selected={}
-                    if type(initial)=="table" then for k,v in pairs(initial) do if type(k)=="number" then selected[v]=true elseif v then selected[k]=true end end end
-                    initial=selected
-                elseif type(initial)=="number" then initial=(data.Values or {})[initial] end
-                local o=observable(initial); o.Values=table.clone(data.Values or {}); options[id]=o
-                local choices={}
-                function o:Display()
-                    if data.Multi then
-                        local names={}; for name,v in pairs(self.Value or {}) do if v then table.insert(names,name) end end
-                        table.sort(names); b.Text=#names==0 and "Select...  ▾" or (#names==1 and names[1].."  ▾" or tostring(#names).." selected  ▾")
-                    else b.Text=tostring(self.Value or "Select...").."  ▾" end
-                    for name,choice in pairs(choices) do
-                        local selected=data.Multi and (self.Value or {})[name] or self.Value==name
-                        choice.TextColor3=selected and colors.accent or colors.text
-                    end
-                end
-                o.render=function() o:Display() end
-                function o:SetValues(values)
-                    self.Values=table.clone(values or self.Values)
-                    for _,child in ipairs(list:GetChildren()) do if child:IsA("TextButton") then child:Destroy() end end
-                    choices={}
-                    for index,name in ipairs(self.Values) do
-                        local choice=button(list,tostring(name)); choice.Size=UDim2.new(1,-6,0,28); choice.LayoutOrder=index; choices[name]=choice
-                        -- Instance-owned connection is released when this choice is destroyed.
-                        choice.Activated:Connect(function()
-                            if data.Multi then local selected=table.clone(self.Value or {}); selected[name]=not selected[name] or nil; self:SetValue(selected)
-                            else self:SetValue(name); list.Visible=false end
-                        end)
-                    end
-                    self:Display()
-                end
-                o:SetValues(o.Values); connect(b.Activated,function() list.Visible=not list.Visible end)
-                return o
-            end
-            return g
-        end
-        local result={}
-        function result:AddTab(name)
-            local tabButton=button(nav,name); tabButton:SetAttribute("NoHover",true); tabButton.Size=UDim2.new(1,0,0,36); tabButton.TextXAlignment=Enum.TextXAlignment.Left
-            make("UIPadding",{PaddingLeft=UDim.new(0,12)},tabButton)
-            local page=make("ScrollingFrame",{BackgroundTransparency=1,BorderSizePixel=0,ClipsDescendants=true,
-                Position=UDim2.fromOffset(200,52),Size=UDim2.new(1,-218,1,-68),ScrollBarThickness=3,
-                ScrollBarImageColor3=colors.accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=first},window)
-            local columns={}
-            for i=1,2 do
-                columns[i]=make("Frame",{BackgroundTransparency=1,Position=UDim2.new((i-1)*.5,(i-1)*6,0,2),
-                    Size=UDim2.new(.5,-8,0,0),AutomaticSize=Enum.AutomaticSize.Y},page)
-                make("UIListLayout",{Padding=UDim.new(0,14),SortOrder=Enum.SortOrder.LayoutOrder},columns[i])
-            end
-                        local indicator=make("Frame",{BackgroundColor3=colors.accent,BorderSizePixel=0,
-                Position=UDim2.fromOffset(0,9),Size=UDim2.fromOffset(3,18),Visible=first},tabButton)
-            round(indicator,3)
-            local entry={page=page,button=tabButton,name=name,indicator=indicator}; table.insert(pages,entry)
-            local function activate()
-                header.Text=string.upper(name).."  /  CLOVER RETRIBUTION"
-                for _,item in ipairs(pages) do
-                    local selected=item==entry; item.page.Visible=selected; item.indicator.Visible=selected
-                    if selected then
-                        item.page.Position=UDim2.fromOffset(208,52)
-                        Tween:Create(item.page,TweenInfo.new(.14,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=UDim2.fromOffset(200,52)}):Play()
-                    end
-                    Tween:Create(item.button,TweenInfo.new(.14),{BackgroundColor3=selected and Color3.fromRGB(39,46,24) or colors.panel}):Play()
-                    item.button.TextColor3=selected and colors.accent or colors.muted
-                end
-            end
-            connect(tabButton.Activated,activate)
-            if first then first=false; activate() else tabButton.BackgroundColor3=colors.panel; tabButton.TextColor3=colors.muted end
-            local tab={}
-            function tab:AddLeftGroupbox(title) return group(columns[1],title) end
-            function tab:AddRightGroupbox(title) return group(columns[2],title) end
-            return tab
-        end
-        return result
-    end
-    function lib:CreateHUD(settings)
-        local hud=make("CanvasGroup",{Name="StatusHUD",BackgroundColor3=colors.panel,BorderSizePixel=0,
-            Position=UDim2.fromOffset(24,110),Size=UDim2.fromOffset(284,306),GroupTransparency=1,
-            Visible=settings.Visible~=false},screen)
-        round(hud,13)
-        make("UIStroke",{Color=colors.line,Thickness=1},hud)
-        local hudScale=make("UIScale",{},hud)
-        local function fitHUD()
-            local camera=workspace.CurrentCamera
-            if camera then hudScale.Scale=math.max(.55,math.min(1,(camera.ViewportSize.X-32)/284,(camera.ViewportSize.Y-40)/306)) end
-        end
-        local hudViewportConnection
-        local function bindHUDCamera()
-            if hudViewportConnection then hudViewportConnection:Disconnect() end
-            local camera=workspace.CurrentCamera
-            if camera then hudViewportConnection=connect(camera:GetPropertyChangedSignal("ViewportSize"),fitHUD) end
-            fitHUD()
-        end
-        bindHUDCamera(); connect(workspace:GetPropertyChangedSignal("CurrentCamera"),bindHUDCamera)
-        local brand=label(hud,"CLOVER",14); brand.Font=Enum.Font.GothamBold
-        brand.TextColor3=colors.accent; brand.Position=UDim2.fromOffset(14,10); brand.Size=UDim2.fromOffset(130,24)
-        local titleDrag=make("TextButton",{Text="",BackgroundTransparency=1,Position=UDim2.fromOffset(0,0),Size=UDim2.new(1,-38,0,42)},hud)
-        local collapse=button(hud,"−"); collapse.Size=UDim2.fromOffset(24,24); collapse.Position=UDim2.new(1,-35,0,10)
-        local separator=make("Frame",{BackgroundColor3=colors.line,BorderSizePixel=0,Position=UDim2.fromOffset(12,42),Size=UDim2.new(1,-24,0,1)},hud)
-        local content=make("Frame",{BackgroundTransparency=1,Position=UDim2.fromOffset(14,52),Size=UDim2.new(1,-28,0,240)},hud)
-        local fields={}
-        for i,entry in ipairs({{"Mode","Mode"},{"Target","Target"},{"Skills","Skills"},{"Time","Session"}}) do
-            local name=label(content,entry[2],11); name.TextColor3=colors.muted
-            name.Position=UDim2.fromOffset(0,(i-1)*25); name.Size=UDim2.new(.32,0,0,22)
-            local value=label(content,"—",11); value.Position=UDim2.new(.32,0,0,(i-1)*25)
-            value.Size=UDim2.new(.68,0,0,22); value.TextXAlignment=Enum.TextXAlignment.Right; value.TextTruncate=Enum.TextTruncate.AtEnd
-            fields[entry[1]]=value
-        end
-        local function bar(title,y,color)
-            local text=label(content,title,11); text.Position=UDim2.fromOffset(0,y); text.Size=UDim2.new(1,0,0,20)
-            local track=make("Frame",{BackgroundColor3=colors.field,BorderSizePixel=0,Position=UDim2.fromOffset(0,y+24),Size=UDim2.new(1,0,0,5)},content); round(track,5)
-            local fill=make("Frame",{BackgroundColor3=color,BorderSizePixel=0,Size=UDim2.fromScale(0,1)},track); round(fill,5)
-            return {text=text,fill=fill,fraction=-1}
-        end
-        local ownHealth=bar("Your HP",104,colors.accent)
-        local enemyHealth=bar("Target HP",143,Color3.fromRGB(125,166,242))
-        local pause=button(content,"Pause farm"); pause.Position=UDim2.fromOffset(0,193); pause.Size=UDim2.new(.5,-4,0,29)
-        local menu=button(content,"Open menu"); menu.Position=UDim2.new(.5,4,0,193); menu.Size=UDim2.new(.5,-4,0,29)
-        connect(pause.Activated,function() if settings.OnPause then settings.OnPause() end end)
-        connect(menu.Activated,function() if not wantedVisible then lib:Toggle() end end)
-        local dragging,dragStart,startPosition,touch
-        connect(titleDrag.InputBegan,function(input)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
-                dragging=true; dragStart=input.Position; startPosition=hud.Position; touch=input
-            end
-        end)
-        connect(UIS.InputChanged,function(input)
-            if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input==touch) then
-                local delta=input.Position-dragStart
-                hud.Position=UDim2.new(startPosition.X.Scale,startPosition.X.Offset+delta.X,startPosition.Y.Scale,startPosition.Y.Offset+delta.Y)
-            end
-        end)
-        connect(UIS.InputEnded,function(input)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 or input==touch then dragging=false end
-        end)
-        local collapsed=false
-        connect(collapse.Activated,function()
-            collapsed=not collapsed; collapse.Text=collapsed and "+" or "−"
-            content.Visible=not collapsed; separator.Visible=not collapsed
-            Tween:Create(hud,TweenInfo.new(.16,Enum.EasingStyle.Quad),{Size=UDim2.fromOffset(284,collapsed and 44 or 306)}):Play()
-        end)
-        local hudTween
-        local hudVisibilitySerial=0
-        local result={}
-        function result:SetVisible(value)
-            hudVisibilitySerial+=1
-            local serial=hudVisibilitySerial
-            if hudTween then hudTween:Cancel() end
-            if value then hud.Visible=true end
-            hudTween=Tween:Create(hud,TweenInfo.new(.16),{GroupTransparency=value and 0 or 1})
-            hudTween.Completed:Once(function() if serial==hudVisibilitySerial and not value and not lib.Unloaded then hud.Visible=false end end)
-            hudTween:Play()
-        end
-        local function updateBar(item,title,health,maxHealth)
-            local fraction=maxHealth and maxHealth>0 and math.clamp(health/maxHealth,0,1) or 0
-            item.text.Text=maxHealth and maxHealth>0 and (title.."  "..math.floor(fraction*100+.5).."%") or title.."  —"
-            if math.abs(fraction-item.fraction)>.001 then
-                item.fraction=fraction
-                Tween:Create(item.fill,TweenInfo.new(.22,Enum.EasingStyle.Quad),{Size=UDim2.fromScale(fraction,1)}):Play()
-            end
-        end
-        function result:Update(data)
-            for key,field in pairs(fields) do
-                local nextText=tostring(data[key] or "—")
-                if field.Text~=nextText then field.Text=nextText end
-            end
-            pause.Text=data.Paused and "Resume farm" or "Pause farm"
-            updateBar(ownHealth,"Your HP",data.Health or 0,data.MaxHealth)
-            updateBar(enemyHealth,"Target HP",data.TargetHealth or 0,data.TargetMaxHealth)
-        end
-        result:SetVisible(settings.Visible~=false)
-        return result
-    end
-    return lib,toggles,options
-end
-local Library, Toggles, Options = createCloverLibrary()
+local Library, Toggles, Options = runtime.newUI()
 
 local function setNoRender(enabled)
     local ok, err = pcall(function()
@@ -1718,7 +2138,7 @@ end
 
 task.spawn(function()
     while running do
-        if env.VampireFarmConfig.AutoStatEnabled then
+        if not runtime.paused and env.VampireFarmConfig.AutoStatEnabled then
             local statName = env.VampireFarmConfig.AutoStatTarget
             local character = player.Character
             local status = character and character:FindFirstChild("Status")
@@ -1735,7 +2155,7 @@ task.spawn(function()
                         and type(data.CoreData) == "table"
                         and tonumber(data.CoreData.StatPoints) or 0
 
-                    if running and env.VampireFarmConfig.AutoStatEnabled
+                    if running and not runtime.paused and env.VampireFarmConfig.AutoStatEnabled
                         and env.VampireFarmConfig.AutoStatTarget == statName
                         and points >= 1 then
                         action:FireServer("StatDump", {Stat = statName, Dump = 1})
@@ -2167,6 +2587,7 @@ teleportControlBox:AddButton("Resume Farming", function()
 end)
 
 local function goToSoldierSpawn(root)
+    if not spawn then return end
     root.CFrame = CFrame.new(spawn.Position + Vector3.new(0, 5, 0))
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
@@ -2607,7 +3028,7 @@ local equipCharacter, lastEquipAttempt, equipAttempts = nil, -math.huge, 0
 -- Follow in PostSimulation and apply offsets in the mob's local space.
 -- Teleport to distant targets immediately when mobs are far apart.
 attachConnection = RunService.PostSimulation:Connect(function()
-    if not running or not env.VampireFarmConfig.AutoAttachEnabled
+    if not running or not runtime.allowCombat() or not env.VampireFarmConfig.AutoAttachEnabled
         or not aliveTarget(target) then return end
 
     local character = player.Character
@@ -2650,7 +3071,7 @@ breakerSimulationConnection = RunService.PreSimulation:Connect(function()
 end)
 breakerHeartbeatConnection = RunService.Heartbeat:Connect(function()
     if breakerRoot then restoreBreakerVelocity() end
-    if not running or not env.VampireFarmConfig.AIBreakerEnabled
+    if not running or not runtime.allowCombat() or not env.VampireFarmConfig.AIBreakerEnabled
         or not env.VampireFarmConfig.AutoAttachEnabled
         or not aliveTarget(target) then return end
 
@@ -2875,7 +3296,7 @@ local function activateGrimoireTool(character, enemy, tool)
     return true
 end
 local function trySelectedSkill(character, enemy)
-    if not env.VampireFarmConfig.AutoSkillEnabled
+    if not runtime.allowCombat() or not env.VampireFarmConfig.AutoSkillEnabled
         or not aliveTarget(enemy) then
         return false
     end
@@ -2968,6 +3389,7 @@ end
 
 RunService:BindToRenderStep(cameraBinding, Enum.RenderPriority.Camera.Value + 1, function()
     if not running then return end
+    if runtime.paused then restoreCamera(); return end
     local camera = workspace.CurrentCamera
     local myRoot = getRoot(player.Character)
     local enemyRoot = getRoot(target)
@@ -3008,39 +3430,10 @@ task.spawn(function()
         task.wait(0.25)
     end
 end)
-golem.HUD=Library:CreateHUD({Visible=env.VampireFarmConfig.HUDEnabled,OnPause=function()
-    teleportPaused=not teleportPaused
-    if teleportPaused then
-        target=nil; targetSource=nil
-        restoreCamera(); restoreBreakerVelocity()
-    end
-end})
-task.spawn(function()
-    local startedAt=os.clock()
-    while running and not Library.Unloaded do
-        local character=player.Character
-        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
-        local targetHumanoid=target and target:FindFirstChildOfClass("Humanoid")
-        local status=character and character:FindFirstChild("Status")
-        local casting=status and status:FindFirstChild("Casting")
-        local elapsed=math.floor(os.clock()-startedAt)
-        local skillStatus="Off"
-        if env.VampireFarmConfig.AutoSkillEnabled then
-            if casting and casting.Value then skillStatus="Casting"
-            elseif not target then skillStatus="Waiting for target"
-            else skillStatus="Enabled" end
-        end
-        local mode=teleportPaused and "Paused" or (targetSource or activeMode)
-        if targetSource=="Base" and not teleportPaused then mode=activeMode end
-        golem.HUD:Update({Mode=mode,Target=target and target.Name or "Waiting…",Skills=skillStatus,
-            Time=string.format("%02d:%02d:%02d",math.floor(elapsed/3600),math.floor(elapsed/60)%60,elapsed%60),
-            Health=humanoid and humanoid.Health or 0,MaxHealth=humanoid and humanoid.MaxHealth,
-            TargetHealth=targetHumanoid and targetHumanoid.Health or 0,TargetMaxHealth=targetHumanoid and targetHumanoid.MaxHealth,
-            Paused=teleportPaused})
-        task.wait(.25)
-    end
-end)
-
+golem.HUD=runtime.hud
+runtime.telemetry=function()
+    return {Model=target,Skills=env.VampireFarmConfig.AutoSkillEnabled and "Enabled" or "Off"}
+end
 local function updateTarget(fromPosition)
     local primeApex
     if env.VampireFarmConfig.PrimeApexFarmEnabled then
@@ -3170,7 +3563,7 @@ while running do
         target = nil
         targetSource = nil
         task.wait(1)
-    elseif teleportPaused then
+    elseif teleportPaused or not runtime.allowCombat() then
         target = nil
         targetSource = nil
         task.wait(0.25)
@@ -3198,12 +3591,12 @@ while running do
             task.wait(0.3)
         elseif not target then
             if activeMode == "Vampire" then
-                if (myRoot.Position - spawn.Position).Magnitude > 80 then
+                if spawn and (myRoot.Position - spawn.Position).Magnitude > 80 then
                     goToSoldierSpawn(myRoot)
                 end
 
                 if not warnedDisabledSpawn
-                    and spawn:GetAttribute("spawn_enabled") == false then
+                    and spawn and spawn:GetAttribute("spawn_enabled") == false then
                     warnedDisabledSpawn = true
                     warn("[VampireFarm] VampireSoldierSpawn reports spawn_enabled=false; proximity may not activate it")
                 end
@@ -3222,20 +3615,20 @@ while running do
 
             if tryOwnedMobLocalKill(target) then
                 target = nil
-                task.wait(ATTACK_INTERVAL)
+                task.wait(runtime.config.AttackInterval)
                 continue
             end
 
             -- Keep M1 regular even when selected skills are always ready.
             local skillUsed = false
             if env.VampireFarmConfig.AutoSkillEnabled
-                and os.clock() - lastM1Sent < ATTACK_INTERVAL * 2
+                and os.clock() - lastM1Sent < runtime.config.AttackInterval * 2
                 and aliveTarget(target) then
                 skillUsed = trySelectedSkill(character, target)
             end
             local attackStatus = character:FindFirstChild("Status")
             local activeCast = attackStatus and attackStatus:FindFirstChild("Casting")
-            if not skillUsed and not (activeCast and activeCast.Value)
+            if not skillUsed and runtime.allowAttack(character) and not (activeCast and activeCast.Value)
                 and aliveTarget(target) then
                 local sent, err = pcall(function()
                     action:FireServer("M1", {password = "Spirit"})
@@ -3246,7 +3639,7 @@ while running do
                     warn("[VampireFarm] M1 failed: " .. tostring(err))
                 end
             end
-            task.wait(ATTACK_INTERVAL)
+            task.wait(runtime.config.AttackInterval)
         end
     end
 end
@@ -3254,3 +3647,1885 @@ end
 
 
 
+
+end
+runtime.profiles.Jungle=function()
+-- Jungle Island farm for Potassium.
+-- Mob names and spawn mappings come from the connected place's live folders.
+
+local env = getgenv()
+if type(env.StopJungleFarm) == "function" then pcall(env.StopJungleFarm) end
+if type(env.StopVampireFarm) == "function" then pcall(env.StopVampireFarm) end
+
+local config = {
+    MobFarm = true,
+    BossFarm = true,
+    ApexFarm = true,
+    PrimeApexFarm = true,
+    AutoAttach = true,
+    FollowDistance = 5,
+    XOffset = 0,
+    YOffset = 0,
+    AIBreaker = false,
+    AIBreakerType = "OPassive",
+    AutoEquip = true,
+    AutoSkill = false,
+    AutoStat = false,
+    Stat = "STR",
+    InstantKill = false,
+    MobKillThreshold = 89,
+    BossKillThreshold = 89,
+    ApexKillThreshold = 50,
+    PrimeApexKillThreshold = 35,
+    NoRender = false,
+    SimulationRadius = 3000,
+    MenuKey = "RightShift",
+    SelectedMobs = {},
+    SelectedBosses = {},
+    SelectedSkills = {},
+    MobPriorities = {},
+    MobSpawnOverrides = {},
+}
+if type(env.CloverJungleConfig)=="table" then
+    for key,value in pairs(env.CloverJungleConfig) do if config[key]~=nil then config[key]=value end end
+end
+env.CloverJungleConfig=config
+local token = {}
+env.JungleFarmLaunchToken = token
+if not game:IsLoaded() then game.Loaded:Wait() end
+if env.JungleFarmLaunchToken ~= token then return end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+local HttpService = game:GetService("HttpService")
+local VirtualUser = game:GetService("VirtualUser")
+local player = Players.LocalPlayer
+local replicated = game:GetService("ReplicatedStorage")
+local entities = workspace:WaitForChild("Entities", 15)
+local enemies = entities and entities:WaitForChild("Enemies", 15)
+local spawns = entities and entities:WaitForChild("Spawns", 15)
+local interactions = entities and entities:FindFirstChild("Interactions")
+local events = entities and entities:FindFirstChild("Events")
+local package = replicated:WaitForChild("ReplicatedPackage", 15)
+local remotes = package and package:WaitForChild("Remotes", 15)
+local action = remotes and remotes:WaitForChild("action", 15)
+local fetch = remotes and remotes:FindFirstChild("fetch")
+if not (enemies and spawns and action) then
+    error("[JungleFarm] Missing Entities.Enemies, Entities.Spawns, or action remote")
+end
+
+local checkModule = package.LocalServices:FindFirstChild("CheckService")
+local checkOk, CheckService = pcall(function() return require(checkModule) end)
+if not checkOk then CheckService = nil end
+local catalogModule = package.Modules:FindFirstChild("SealCatalog")
+local catalogOk, SealCatalog = pcall(function() return require(catalogModule) end)
+if not catalogOk then SealCatalog = nil end
+
+local spellNames = {}
+local spellFolder = package.LocalServices.Database:FindFirstChild("Spell")
+if spellFolder then
+    for _, item in ipairs(spellFolder:GetDescendants()) do
+        if item:IsA("ModuleScript") then spellNames[item.Name] = true end
+    end
+end
+
+local MOB_NAMES, BOSS_NAMES = {}, {}
+local SPECIAL_BOSSES = {Apex = true, ["Prime Apex"] = true}
+if SealCatalog and type(SealCatalog.Seals) == "table" then
+    for _, entry in ipairs(SealCatalog.Seals) do
+        if entry.region == "Jungle" and type(entry.name) == "string" then
+            if entry.boss == true then
+                if not SPECIAL_BOSSES[entry.name] then BOSS_NAMES[entry.name] = true end
+            else
+                MOB_NAMES[entry.name] = true
+            end
+        end
+    end
+end
+
+local function rootOf(model)
+    return model and (model:FindFirstChild("HumanoidRootPart")
+        or model:FindFirstChild("RootPart") or model.PrimaryPart)
+end
+
+local function alive(model)
+    if not (model and model:IsA("Model") and model:IsDescendantOf(workspace)) then
+        return false
+    end
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    return humanoid ~= nil and humanoid.Health > 0 and rootOf(model) ~= nil
+        and not model:GetAttribute("Dead")
+end
+
+local function enemyModel(model)
+    return alive(model) and (model.Parent == enemies
+        or CollectionService:HasTag(model, "Enemy")
+        or model:GetAttribute("CollisionGroup") == "Enemy")
+end
+
+local function spawnPool(part)
+    local pool = part:GetAttribute("spawn_pool")
+    if type(pool) ~= "string" then return {} end
+    local ok, decoded = pcall(function() return HttpService:JSONDecode(pool) end)
+    return ok and type(decoded) == "table" and decoded or {}
+end
+
+local function refreshCatalog()
+    for _, model in ipairs(enemies:GetChildren()) do
+        if alive(model) and not SPECIAL_BOSSES[model.Name] then
+            local bossValue = model:FindFirstChild("Boss")
+            if BOSS_NAMES[model.Name]
+                or (bossValue and bossValue:IsA("BoolValue") and bossValue.Value) then
+                BOSS_NAMES[model.Name] = true
+                MOB_NAMES[model.Name] = nil
+            else
+                MOB_NAMES[model.Name] = true
+            end
+        end
+    end
+    for _, part in ipairs(spawns:GetChildren()) do
+        if part:IsA("BasePart") then
+            for name in pairs(spawnPool(part)) do
+                if not (BOSS_NAMES[name] or SPECIAL_BOSSES[name]) then
+                    MOB_NAMES[name] = true
+                end
+            end
+        end
+    end
+    for name in pairs(MOB_NAMES) do
+        if config.SelectedMobs[name] == nil then config.SelectedMobs[name] = true end
+    end
+    for name in pairs(BOSS_NAMES) do
+        if config.SelectedBosses[name] == nil then config.SelectedBosses[name] = true end
+    end
+end
+refreshCatalog()
+
+if env.JungleFarmLaunchToken ~= token then return end
+local Library,Toggles,Options = runtime.newUI()
+
+local running = true
+local paused = false
+local target, targetKind
+local connections = {}
+local lastM1 = -math.huge
+local lastEquip = -math.huge
+local lastBook = -math.huge
+local lastSkill = {}
+local nextSkillIndex = 1
+local grimoireEquipPauseUntil = -math.huge
+local grimoireBusy = false
+local lastKillAttempt = setmetatable({}, {__mode = "k"})
+local nextCamp = 0
+local campIndex = 0
+local breakerRoot, breakerSavedVelocity
+
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(connections, connection)
+    return connection
+end
+
+local function setNoRender(enabled)
+    local ok, err = pcall(function() RunService:Set3dRenderingEnabled(not enabled) end)
+    if ok then config.NoRender = enabled
+    else warn("[JungleFarm] NoRender: " .. tostring(err)) end
+end
+
+local function restoreBreakerVelocity()
+    if breakerRoot and breakerRoot.Parent and breakerSavedVelocity then
+        breakerRoot.AssemblyLinearVelocity = breakerSavedVelocity
+    end
+    breakerRoot, breakerSavedVelocity = nil, nil
+end
+
+env.StopJungleFarm = function()
+    if not running then return end
+    running = false
+    for _, connection in ipairs(connections) do connection:Disconnect() end
+    restoreBreakerVelocity()
+    if config.NoRender then setNoRender(false) end
+    if Library and not Library.Unloaded then pcall(function() Library:Unload() end) end
+    target, targetKind = nil, nil
+    print("[JungleFarm] Stopped")
+end
+
+local function mobPriority(name)
+    return math.clamp(tonumber(config.MobPriorities[name]) or 1, 1, 10)
+end
+
+local function classify(model)
+    if not enemyModel(model) then return nil end
+    local name = model.Name
+    if name == "Prime Apex" and config.PrimeApexFarm then return "PrimeApex", 400 end
+    if name == "Apex" and config.ApexFarm then return "Apex", 300 end
+    if config.BossFarm and BOSS_NAMES[name] and config.SelectedBosses[name] then
+        return "Boss", 200
+    end
+    if config.MobFarm and MOB_NAMES[name] and config.SelectedMobs[name] then
+        return "Mob", mobPriority(name)
+    end
+    return nil
+end
+
+local function liveCandidates()
+    local result, seen = {}, {}
+    local function add(model)
+        if model and not seen[model] and enemyModel(model) then
+            seen[model] = true
+            table.insert(result, model)
+        end
+    end
+    for _, model in ipairs(enemies:GetChildren()) do add(model) end
+    for _, model in ipairs(CollectionService:GetTagged("Enemy")) do add(model) end
+    return result
+end
+
+local function chooseTarget(fromPosition)
+    local best, bestKind, bestRank, bestDistance
+    for _, model in ipairs(liveCandidates()) do
+        local kind, rank = classify(model)
+        if kind then
+            local distance = (rootOf(model).Position - fromPosition).Magnitude
+            if not best or rank > bestRank
+                or (rank == bestRank and distance < bestDistance) then
+                best, bestKind, bestRank, bestDistance = model, kind, rank, distance
+            end
+        end
+    end
+    if target and targetKind then
+        local kind, rank = classify(target)
+        if kind and (not best or rank >= bestRank) then return target, kind end
+    end
+    return best, bestKind
+end
+
+local function mappedSpawns(name)
+    local selected = {}
+    local override = config.MobSpawnOverrides[name]
+    if override then
+        local part = spawns:FindFirstChild(override)
+        if part and part:IsA("BasePart") then return {part} end
+    end
+    for _, part in ipairs(spawns:GetChildren()) do
+        if part:IsA("BasePart") and spawnPool(part)[name] then
+            table.insert(selected, part)
+        end
+    end
+    table.sort(selected, function(a, b) return a.Name < b.Name end)
+    return selected
+end
+
+local function campPoint(root)
+    if os.clock() < nextCamp then return end
+    local choices = {}
+    if config.MobFarm then
+        for name in pairs(MOB_NAMES) do
+            if config.SelectedMobs[name] then
+                for _, part in ipairs(mappedSpawns(name)) do
+                    table.insert(choices, {Part = part, Name = name,
+                        Priority = mobPriority(name)})
+                end
+            end
+        end
+    end
+    if #choices == 0 and config.BossFarm and events then
+        for name in pairs(BOSS_NAMES) do
+            if config.SelectedBosses[name] then
+                local folder = events:FindFirstChild(name)
+                local node = folder and folder:FindFirstChild("Node1")
+                if node and node:IsA("BasePart") then
+                    table.insert(choices, {Part = node, Name = name, Priority = 1})
+                end
+            end
+        end
+    end
+    table.sort(choices, function(a, b)
+        if a.Priority ~= b.Priority then return a.Priority > b.Priority end
+        if a.Name ~= b.Name then return a.Name < b.Name end
+        return a.Part.Name < b.Part.Name
+    end)
+    if #choices == 0 then
+        nextCamp = os.clock() + 5
+        return
+    end
+    local topPriority = choices[1].Priority
+    local top = {}
+    for _, choice in ipairs(choices) do
+        if choice.Priority == topPriority then table.insert(top, choice) end
+    end
+    campIndex = campIndex % #top + 1
+    local choice = top[campIndex]
+    if (root.Position - choice.Part.Position).Magnitude > 80 then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        root.CFrame = CFrame.new(choice.Part.Position + Vector3.new(0, 5, 0))
+        print("[JungleFarm] Waiting at " .. choice.Part.Name .. " for " .. choice.Name)
+    end
+    nextCamp = os.clock() + 6
+end
+
+local function killThreshold(kind)
+    if kind == "PrimeApex" then return config.PrimeApexKillThreshold end
+    if kind == "Apex" then return config.ApexKillThreshold end
+    if kind == "Boss" then return config.BossKillThreshold end
+    return config.MobKillThreshold
+end
+
+local function tryLocalKill(model, kind)
+    if not config.InstantKill or not enemyModel(model) then return false end
+    if type(isnetworkowner) ~= "function" then return false end
+    if os.clock() - (lastKillAttempt[model] or -math.huge) < 2 then return false end
+    local humanoid, root = model:FindFirstChildOfClass("Humanoid"), rootOf(model)
+    if humanoid.MaxHealth <= 0 then return false end
+    local hpPercent = humanoid.Health / humanoid.MaxHealth * 100
+    if hpPercent > killThreshold(kind) then return false end
+    local ok, owned = pcall(isnetworkowner, root)
+    if not (ok and owned) then return false end
+    lastKillAttempt[model] = os.clock()
+    local changed = pcall(function() humanoid.Health = 0 end)
+    if changed then
+        print(("[JungleFarm] %s at %.1f%% HP: local kill attempt")
+            :format(model.Name, hpPercent))
+    end
+    return changed
+end
+
+local function availableSkills()
+    local result = {}
+    local gui = player:FindFirstChildOfClass("PlayerGui")
+    local hud = gui and gui:FindFirstChild("HUD")
+    local bar = hud and hud:FindFirstChild("WeaponSkills")
+    local frame = bar and bar:FindFirstChild("Frame")
+    if frame then
+        for _, slot in ipairs(frame:GetChildren()) do
+            local move = slot:FindFirstChild("MoveName")
+            if slot:FindFirstChild("SkillButton") and move
+                and move.Text == slot.Name and slot.Name ~= "SkillSlot" then
+                table.insert(result, {Key = "Weapon:" .. slot.Name,
+                    Name = slot.Name, Label = "Weapon | " .. slot.Name,
+                    Kind = "Weapon", Order = slot.LayoutOrder})
+            end
+        end
+    end
+    local seen = {}
+    for _, container in ipairs({player.Character, player:FindFirstChildOfClass("Backpack")}) do
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") and not seen[tool.Name]
+                    and (spellNames[tool.Name] or tool:GetAttribute("Type") == "Spell"
+                        or tool:GetAttribute("ItemType") == "Spell") then
+                    seen[tool.Name] = true
+                    table.insert(result, {Key = "Grimoire:" .. tool.Name,
+                        Name = tool.Name, Label = "Grimoire | " .. tool.Name,
+                        Kind = "Grimoire", Order = 100 +
+                            (tonumber(tool:GetAttribute("Index")) or 99), Tool = tool})
+                end
+            end
+        end
+    end
+    table.sort(result, function(a, b)
+        return a.Order == b.Order and a.Key < b.Key or a.Order < b.Order
+    end)
+    return result
+end
+
+local function ensureWeapon(character)
+    if not config.AutoEquip or os.clock() - lastEquip < 1
+        or os.clock() < grimoireEquipPauseUntil then return end
+    if character:FindFirstChild("Weapon") or character:FindFirstChildOfClass("Tool") then return end
+    lastEquip = os.clock()
+    if CheckService then
+        local ok, ready = pcall(function() return CheckService:Equip(character) end)
+        if ok and not ready then return end
+    end
+    pcall(function() action:FireServer("EquipWeapon") end)
+end
+
+local function activateGrimoire(character, enemy, tool)
+    grimoireBusy=true
+    grimoireEquipPauseUntil=os.clock()+32
+    local ok,confirmed=pcall(runtime.cast,character,enemy,tool,function() return running end)
+    grimoireBusy=false
+    grimoireEquipPauseUntil=os.clock()+.25
+    if not ok then warn("[JungleSkill] "..tostring(confirmed)) end
+    return ok and confirmed
+end
+local function trySkill(character)
+    if not runtime.allowCombat() or not config.AutoSkill or grimoireBusy or not enemyModel(target) then return false end
+    local status = character:FindFirstChild("Status")
+    local cooldown = status and status:FindFirstChild("Cooldown")
+    local casting = status and status:FindFirstChild("Casting")
+    if not cooldown or (casting and casting.Value) then return false end
+    local myRoot, enemyRoot = rootOf(character), rootOf(target)
+    if not (myRoot and enemyRoot)
+        or (myRoot.Position - enemyRoot.Position).Magnitude > 18 then return false end
+    local skills = availableSkills()
+    if #skills == 0 then return false end
+    for offset = 0, #skills - 1 do
+        local index = (nextSkillIndex + offset - 1) % #skills + 1
+        local skill = skills[index]
+        if config.SelectedSkills[skill.Key]
+            and not cooldown:FindFirstChild(skill.Name)
+            and os.clock() - (lastSkill[skill.Key] or -math.huge) >= 1.5 then
+            if skill.Kind == "Weapon" and character:FindFirstChild("Weapon") then
+                local ok, ready = pcall(function()
+                    return not CheckService or CheckService:Skill(character, skill.Name)
+                end)
+                if ok and ready then
+                    lastSkill[skill.Key] = os.clock()
+                    nextSkillIndex = index % #skills + 1
+                    pcall(function()
+                        action:FireServer("Toolbar", {WeaponSkill = skill.Name})
+                    end)
+                    return true
+                end
+            elseif skill.Kind == "Grimoire" then
+                local book = status:FindFirstChild("Grimoire")
+                if book and book:IsA("BoolValue") and not book.Value then
+                    if os.clock() - lastBook >= 3 then
+                        lastBook = os.clock()
+                        grimoireEquipPauseUntil = os.clock() + 2.5
+                        pcall(function() action:FireServer("Book") end)
+                        return true
+                    end
+                elseif skill.Tool and skill.Tool.Enabled then
+                    if activateGrimoire(character, target, skill.Tool) then
+                        lastSkill[skill.Key] = os.clock()
+                        nextSkillIndex = index % #skills + 1
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+Library.MainColor = Color3.fromHex("1b2b34")
+Library.BackgroundColor = Color3.fromHex("16232a")
+Library.AccentColor = Color3.fromHex("6699cc")
+Library.OutlineColor = Color3.fromHex("343d46")
+Library.FontColor = Color3.fromHex("d8dee9")
+local window = Library:CreateWindow({
+    Title = "Jungle Farm", Center = true, AutoShow = true,
+    Size = UDim2.fromOffset(640, 550), MenuFadeTime = 0.2,
+})
+runtime.telemetry=function() return {Model=target,Skills=config.AutoSkill and "Enabled" or "Off"} end
+local mobTab = window:AddTab("Jungle Mobs")
+local bossTab = window:AddTab("Boss Farm")
+local combatTab = window:AddTab("Combat")
+local teleportTab = window:AddTab("Teleport")
+local uiTab = window:AddTab("UI")
+local mobBox = mobTab:AddLeftGroupbox("Mobs")
+local mobSettings = mobTab:AddRightGroupbox("Priority and Spawn")
+local bossBox = bossTab:AddLeftGroupbox("Bosses")
+local specialBox = bossTab:AddRightGroupbox("Apex")
+local attackBox = combatTab:AddLeftGroupbox("Attack")
+local attachBox = combatTab:AddLeftGroupbox("Attach")
+local skillBox = combatTab:AddRightGroupbox("Skills and Stats")
+local breakerBox = combatTab:AddRightGroupbox("AI Breaker")
+local placeBox = teleportTab:AddLeftGroupbox("Places")
+local npcBox = teleportTab:AddRightGroupbox("NPCs")
+local mobTeleportBox = teleportTab:AddRightGroupbox("Mobs and Bosses")
+local teleportBox = teleportTab:AddLeftGroupbox("Farm Control")
+local uiBox = uiTab:AddLeftGroupbox("Window")
+
+local function sortedNames(set)
+    local names = {}
+    for name in pairs(set) do table.insert(names, name) end
+    table.sort(names)
+    return names
+end
+
+local function addDropdownSearch(groupbox, dropdownId, label)
+    local dropdown = Options[dropdownId]
+    local originalSetValues = dropdown.SetValues
+    local originalSetValue = dropdown.SetValue
+    local allValues = table.clone(dropdown.Values)
+    local query = ""
+    local function applySearch()
+        local filtered = {}
+        local needle = string.lower(query):match("^%s*(.-)%s*$")
+        for _, value in ipairs(allValues) do
+            if needle == "" or string.find(string.lower(value), needle, 1, true) then
+                table.insert(filtered, value)
+            end
+        end
+        originalSetValues(dropdown, filtered)
+        dropdown:Display()
+    end
+    function dropdown:SetValues(values)
+        if values then allValues = table.clone(values) end
+        applySearch()
+    end
+    function dropdown:SetValue(value)
+        originalSetValues(dropdown, allValues)
+        originalSetValue(dropdown, value)
+        applySearch()
+    end
+    local searchId = "Search" .. dropdownId
+    groupbox:AddInput(searchId, {
+        Text = "Search " .. label, Default = "",
+        Placeholder = "Type to filter...", Finished = false,
+    })
+    Options[searchId]:OnChanged(function(value)
+        query = tostring(value or "")
+        applySearch()
+    end)
+end
+
+breakerBox:AddToggle("JungleAIBreaker", {
+    Text = "AI Breaker", Default = config.AIBreaker,
+})
+Toggles.JungleAIBreaker:OnChanged(function(v)
+    config.AIBreaker = v
+    if not v then restoreBreakerVelocity() end
+end)
+breakerBox:AddDropdown("JungleAIBreakerType", {
+    Text = "Breaker type", Values = {"OPassive", "Passive", "Circular", "Aggressive"},
+    Default = config.AIBreakerType,
+})
+addDropdownSearch(breakerBox, "JungleAIBreakerType", "breaker types")
+Options.JungleAIBreakerType:OnChanged(function(v) config.AIBreakerType = v end)
+
+local initialMobs, initialBosses = sortedNames(MOB_NAMES), sortedNames(BOSS_NAMES)
+mobBox:AddToggle("JungleMobFarm", {Text = "Auto Mob Farm", Default = config.MobFarm})
+Toggles.JungleMobFarm:OnChanged(function(v) config.MobFarm = v; target = nil end)
+mobBox:AddDropdown("JungleMobTargets", {
+    Text = "Mobs to farm", Values = initialMobs,
+    Default = initialMobs, Multi = true, AllowNull = true,
+})
+addDropdownSearch(mobBox, "JungleMobTargets", "mobs")
+local refreshingMobs = false
+Options.JungleMobTargets:OnChanged(function(selected)
+    if refreshingMobs or type(selected) ~= "table" then return end
+    for name in pairs(MOB_NAMES) do config.SelectedMobs[name] = selected[name] == true end
+    target = nil
+end)
+mobBox:AddButton("Select all", function()
+    local selected = {}
+    for name in pairs(MOB_NAMES) do selected[name] = true end
+    Options.JungleMobTargets:SetValue(selected)
+end)
+mobBox:AddButton("Deselect all", function()
+    Options.JungleMobTargets:SetValue({})
+end)
+mobBox:AddLabel("Selected bosses interrupt mobs, then mob farming resumes.", true)
+
+mobSettings:AddDropdown("JungleMobSettingTarget", {
+    Text = "Configure mob", Values = initialMobs, Default = initialMobs[1],
+    AllowNull = true,
+})
+addDropdownSearch(mobSettings, "JungleMobSettingTarget", "mob settings")
+mobSettings:AddSlider("JungleMobPriority", {
+    Text = "Priority", Default = 1, Min = 1, Max = 10, Rounding = 0,
+})
+local spawnChoices = {"Auto"}
+for _, part in ipairs(spawns:GetChildren()) do
+    if part:IsA("BasePart") then table.insert(spawnChoices, part.Name) end
+end
+table.sort(spawnChoices, function(a, b)
+    if a == "Auto" then return true end
+    if b == "Auto" then return false end
+    return a < b
+end)
+mobSettings:AddDropdown("JungleMobSpawn", {
+    Text = "Spawn for this mob", Values = spawnChoices, Default = "Auto",
+})
+addDropdownSearch(mobSettings, "JungleMobSpawn", "spawns")
+mobSettings:AddLabel("Auto reads each Jungle spawn's spawn_pool.", true)
+local syncingMobSettings = false
+local function refreshMobSettings()
+    local name = Options.JungleMobSettingTarget.Value
+    if not name then return end
+    syncingMobSettings = true
+    Options.JungleMobPriority:SetValue(mobPriority(name))
+    local override = config.MobSpawnOverrides[name]
+    Options.JungleMobSpawn:SetValue(override and table.find(spawnChoices, override)
+        and override or "Auto")
+    syncingMobSettings = false
+end
+Options.JungleMobSettingTarget:OnChanged(refreshMobSettings)
+Options.JungleMobPriority:OnChanged(function(value)
+    if syncingMobSettings then return end
+    local name = Options.JungleMobSettingTarget.Value
+    if name then config.MobPriorities[name] = value end
+end)
+Options.JungleMobSpawn:OnChanged(function(value)
+    if syncingMobSettings then return end
+    local name = Options.JungleMobSettingTarget.Value
+    if name then
+        config.MobSpawnOverrides[name] = value ~= "Auto" and value or nil
+    end
+end)
+refreshMobSettings()
+
+bossBox:AddToggle("JungleBossFarm", {Text = "Auto Boss Farm", Default = config.BossFarm})
+Toggles.JungleBossFarm:OnChanged(function(v) config.BossFarm = v; target = nil end)
+bossBox:AddDropdown("JungleBossTargets", {
+    Text = "Bosses to farm", Values = initialBosses,
+    Default = initialBosses, Multi = true, AllowNull = true,
+})
+addDropdownSearch(bossBox, "JungleBossTargets", "bosses")
+local refreshingBosses = false
+Options.JungleBossTargets:OnChanged(function(selected)
+    if refreshingBosses or type(selected) ~= "table" then return end
+    for name in pairs(BOSS_NAMES) do config.SelectedBosses[name] = selected[name] == true end
+    target = nil
+end)
+bossBox:AddButton("Select all", function()
+    local selected = {}
+    for name in pairs(BOSS_NAMES) do selected[name] = true end
+    Options.JungleBossTargets:SetValue(selected)
+end)
+bossBox:AddButton("Deselect all", function()
+    Options.JungleBossTargets:SetValue({})
+end)
+bossBox:AddLabel("Live selected bosses outrank every regular mob.", true)
+
+specialBox:AddToggle("JungleApexFarm", {Text = "Apex Farm", Default = config.ApexFarm})
+Toggles.JungleApexFarm:OnChanged(function(v) config.ApexFarm = v; target = nil end)
+specialBox:AddToggle("JunglePrimeApexFarm", {
+    Text = "Prime Apex Farm", Default = config.PrimeApexFarm,
+})
+Toggles.JunglePrimeApexFarm:OnChanged(function(v)
+    config.PrimeApexFarm = v; target = nil
+end)
+specialBox:AddLabel("Prime Apex > Apex > selected bosses > mobs.", true)
+
+attackBox:AddToggle("JungleInstantKill", {
+    Text = "Local kill attempt", Default = config.InstantKill,
+})
+Toggles.JungleInstantKill:OnChanged(function(v) config.InstantKill = v end)
+local function addThreshold(groupbox, id, label, field)
+    groupbox:AddSlider(id, {
+        Text = label, Default = config[field],
+        Min = 0, Max = 100, Rounding = 0, Suffix = "%",
+    })
+    Options[id]:OnChanged(function(value) config[field] = value end)
+    groupbox:AddInput(id .. "Text", {
+        Text = label .. " %", Default = tostring(config[field]),
+        Numeric = true, Finished = true,
+    })
+    Options[id .. "Text"]:OnChanged(function(value)
+        local number = tonumber(value)
+        if number then
+            Options[id]:SetValue(math.clamp(math.floor(number + 0.5), 0, 100))
+        end
+    end)
+end
+addThreshold(attackBox, "JungleMobKill", "Mob HP threshold", "MobKillThreshold")
+addThreshold(attackBox, "JungleBossKill", "Boss HP threshold", "BossKillThreshold")
+addThreshold(attackBox, "JungleApexKill", "Apex HP threshold", "ApexKillThreshold")
+addThreshold(attackBox, "JunglePrimeKill", "Prime HP threshold", "PrimeApexKillThreshold")
+attackBox:AddLabel("Local attempt needs network ownership; confirm server reward.", true)
+
+attachBox:AddToggle("JungleAutoAttach", {Text = "Auto Attach", Default = config.AutoAttach})
+Toggles.JungleAutoAttach:OnChanged(function(v) config.AutoAttach = v end)
+for _, setting in ipairs({
+    {"JungleDistance", "Back distance", "FollowDistance", 1, 80},
+    {"JungleXOffset", "Side offset", "XOffset", -80, 80},
+    {"JungleYOffset", "Height offset", "YOffset", -80, 80},
+}) do
+    attachBox:AddSlider(setting[1], {
+        Text = setting[2], Default = config[setting[3]],
+        Min = setting[4], Max = setting[5], Rounding = 1,
+    })
+    Options[setting[1]]:OnChanged(function(v) config[setting[3]] = v end)
+end
+
+skillBox:AddToggle("JungleAutoEquip", {
+    Text = "Auto equip weapon", Default = config.AutoEquip,
+})
+Toggles.JungleAutoEquip:OnChanged(function(v) config.AutoEquip = v end)
+skillBox:AddToggle("JungleAutoSkill", {Text = "Auto Skill", Default = config.AutoSkill})
+Toggles.JungleAutoSkill:OnChanged(function(v) config.AutoSkill = v end)
+skillBox:AddDropdown("JungleSkillTargets", {
+    Text = "Equipped skills", Values = {}, Default = {},
+    Multi = true, AllowNull = true,
+})
+addDropdownSearch(skillBox, "JungleSkillTargets", "skills")
+local refreshingSkills = true
+Options.JungleSkillTargets:OnChanged(function(selected)
+    if refreshingSkills or type(selected) ~= "table" then return end
+    for _, skill in ipairs(availableSkills()) do
+        config.SelectedSkills[skill.Key] = selected[skill.Label] == true
+    end
+end)
+skillBox:AddDropdown("JungleStat", {
+    Text = "Stat", Values = {"STR", "DEX", "INT", "CON"},
+    Default = config.Stat,
+})
+addDropdownSearch(skillBox, "JungleStat", "stats")
+Options.JungleStat:OnChanged(function(v) config.Stat = v end)
+skillBox:AddToggle("JungleAutoStat", {Text = "Auto Stat", Default = config.AutoStat})
+Toggles.JungleAutoStat:OnChanged(function(v) config.AutoStat = v end)
+
+local map = workspace:FindFirstChild("Map")
+local island = map and map:FindFirstChild("Jungle_Island")
+local placeNames = {
+    "Docks", "HunterCamp", "HotSprings", "Temple", "DungeonEntrance",
+    "Volcano", "JaguarBossArea", "Jungle_Village", "CrocodileVillage",
+}
+local validPlaces = {}
+for _, name in ipairs(placeNames) do
+    if island and island:FindFirstChild(name) then table.insert(validPlaces, name) end
+end
+table.sort(validPlaces)
+
+local function positionOf(instance)
+    if not instance then return nil end
+    if instance:IsA("BasePart") then return instance.Position end
+    if instance:IsA("Model") then return instance:GetPivot().Position end
+    if instance:IsA("Folder") then
+        local minimum, maximum
+        for _, part in ipairs(instance:GetDescendants()) do
+            if part:IsA("BasePart") then
+                local position = part.Position
+                minimum = minimum and Vector3.new(
+                    math.min(minimum.X, position.X),
+                    math.min(minimum.Y, position.Y),
+                    math.min(minimum.Z, position.Z)) or position
+                maximum = maximum and Vector3.new(
+                    math.max(maximum.X, position.X),
+                    math.max(maximum.Y, position.Y),
+                    math.max(maximum.Z, position.Z)) or position
+            end
+        end
+        return minimum and (minimum + maximum) * 0.5 or nil
+    end
+    return nil
+end
+
+local function manualTeleport(position, face, label)
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = rootOf(character)
+    if not (position and humanoid and humanoid.Health > 0 and root) then
+        warn("[JungleFarm] Teleport unavailable")
+        return
+    end
+    paused = true
+    target, targetKind = nil, nil
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    local destination = position + Vector3.new(0, 6, 0)
+    root.CFrame = face and CFrame.lookAt(destination, face) or CFrame.new(destination)
+    print("[JungleFarm] Teleported to " .. label .. "; farm paused")
+end
+
+placeBox:AddDropdown("JunglePlaceTeleport", {
+    Text = "Place", Values = validPlaces, Default = validPlaces[1],
+    AllowNull = true,
+})
+addDropdownSearch(placeBox, "JunglePlaceTeleport", "places")
+placeBox:AddButton("Teleport to Place", function()
+    local name = Options.JunglePlaceTeleport.Value
+    local landmark = name and island and island:FindFirstChild(name)
+    if landmark then
+        manualTeleport(positionOf(landmark), nil, name)
+    else
+        warn("[JungleFarm] Selected place is unavailable")
+    end
+end)
+
+local npcByLabel = {}
+local npcSignature = ""
+npcBox:AddDropdown("JungleNPCTeleport", {
+    Text = "NPC", Values = {}, AllowNull = true,
+})
+addDropdownSearch(npcBox, "JungleNPCTeleport", "NPCs")
+local function refreshNPCs()
+    local found = {}
+    local function scan(container)
+        if not container then return end
+        for _, model in ipairs(container:GetDescendants()) do
+            if model:IsA("Model") and model:FindFirstChildOfClass("Humanoid")
+                and rootOf(model) then
+                table.insert(found, model)
+            end
+        end
+    end
+    scan(interactions)
+    scan(entities:FindFirstChild("Villagers"))
+    table.sort(found, function(a, b)
+        if a.Name ~= b.Name then return a.Name < b.Name end
+        return a:GetFullName() < b:GetFullName()
+    end)
+    local labels, lookup, duplicates = {}, {}, {}
+    for _, model in ipairs(found) do
+        local parent = model.Parent and model.Parent.Name or "Workspace"
+        local base = model.Name .. " (" .. parent .. ")"
+        duplicates[base] = (duplicates[base] or 0) + 1
+        local label = base .. " #" .. duplicates[base]
+        table.insert(labels, label)
+        lookup[label] = model
+    end
+    npcByLabel = lookup
+    local signature = table.concat(labels, "\n")
+    if signature == npcSignature then return end
+    npcSignature = signature
+    local selected = Options.JungleNPCTeleport.Value
+    Options.JungleNPCTeleport:SetValues(labels)
+    if #labels > 0 then
+        Options.JungleNPCTeleport:SetValue(table.find(labels, selected)
+            and selected or labels[1])
+    end
+end
+npcBox:AddButton("Teleport to NPC", function()
+    local model = npcByLabel[Options.JungleNPCTeleport.Value]
+    local root = model and model:IsDescendantOf(workspace) and rootOf(model)
+    if root then
+        local destination = (root.CFrame * CFrame.new(0, 0, 5)).Position
+        manualTeleport(destination - Vector3.new(0, 6, 0), root.Position, model.Name)
+    else
+        refreshNPCs()
+        warn("[JungleFarm] Selected NPC is unavailable")
+    end
+end)
+
+mobTeleportBox:AddDropdown("JungleMobTeleport", {
+    Text = "Mob or boss", Values = {}, AllowNull = true,
+})
+addDropdownSearch(mobTeleportBox, "JungleMobTeleport", "mobs / bosses")
+mobTeleportBox:AddButton("Teleport to Mob", function()
+    local name = Options.JungleMobTeleport.Value
+    if not name then return end
+    local myRoot = rootOf(player.Character)
+    local best, bestDistance
+    for _, model in ipairs(liveCandidates()) do
+        if model.Name == name then
+            local enemyRoot = rootOf(model)
+            local distance = myRoot and (enemyRoot.Position - myRoot.Position).Magnitude
+                or 0
+            if not best or distance < bestDistance then
+                best, bestDistance = enemyRoot, distance
+            end
+        end
+    end
+    if best then
+        local destination = (best.CFrame * CFrame.new(0, 0, 5)).Position
+        manualTeleport(destination - Vector3.new(0, 6, 0), best.Position, name)
+        return
+    end
+    local mapped = mappedSpawns(name)
+    if #mapped > 0 then
+        manualTeleport(mapped[1].Position, nil, name .. " spawn")
+        return
+    end
+    local folder = events and events:FindFirstChild(name)
+    local marker = folder and folder:FindFirstChild("Node1")
+    if marker and marker:IsA("BasePart") then
+        manualTeleport(marker.Position, nil, name .. " marker")
+    else
+        warn("[JungleFarm] No live target or mapped spawn for " .. name)
+    end
+end)
+
+teleportBox:AddLabel("Manual teleports pause farming until resumed.", true)
+teleportBox:AddButton("Resume Farming", function()
+    paused = false
+    print("[JungleFarm] Farming resumed")
+end)
+
+uiBox:AddToggle("JungleNoRender", {Text = "NoRender", Default = config.NoRender})
+Toggles.JungleNoRender:OnChanged(setNoRender)
+uiBox:AddLabel("Show / hide key"):AddKeyPicker("JungleMenuKey", {
+    Default = config.MenuKey, NoUI = true, Mode = "Toggle",
+    Text = "Toggle menu",
+})
+Library.ToggleKeybind = Options.JungleMenuKey
+Options.JungleMenuKey:OnChanged(function(v) config.MenuKey = v end)
+uiBox:AddButton("Hide window", function() Library:Toggle() end)
+uiBox:AddButton("Stop farm", function() env.StopJungleFarm() end)
+Library:OnUnload(function()
+    Library.Unloaded = true
+    if running then env.StopJungleFarm() end
+end)
+
+if config.NoRender then setNoRender(true) end
+connect(player.Idled, function()
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.zero)
+    end)
+end)
+
+local radiusElapsed = 0
+connect(RunService.Heartbeat, function(dt)
+    radiusElapsed += dt
+    if radiusElapsed < 0.05 then return end
+    radiusElapsed = 0
+    if type(sethiddenproperty) == "function" then
+        pcall(sethiddenproperty, player, "MaxSimulationRadius", config.SimulationRadius)
+        pcall(sethiddenproperty, player, "SimulationRadius", config.SimulationRadius)
+    end
+end)
+
+connect(RunService.PostSimulation, function()
+    if not running or paused or not config.AutoAttach or not enemyModel(target) then
+        return
+    end
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local myRoot, enemyRoot = rootOf(character), rootOf(target)
+    if not (humanoid and humanoid.Health > 0 and myRoot and enemyRoot) then return end
+    local targetPosition = (enemyRoot.CFrame * CFrame.new(
+        math.clamp(tonumber(config.XOffset) or 0, -80, 80),
+        math.clamp(tonumber(config.YOffset) or 0, -80, 80),
+        math.clamp(tonumber(config.FollowDistance) or 5, 1, 80)
+    )).Position
+    myRoot.AssemblyLinearVelocity = Vector3.zero
+    myRoot.AssemblyAngularVelocity = Vector3.zero
+    local facing = Vector3.new(enemyRoot.Position.X, targetPosition.Y,
+        enemyRoot.Position.Z)
+    if (facing - targetPosition).Magnitude > 0.01 then
+        myRoot.CFrame = CFrame.lookAt(targetPosition, facing)
+    else
+        myRoot.CFrame = CFrame.new(targetPosition)
+    end
+end)
+
+connect(RunService.PreSimulation, function()
+    if breakerRoot then restoreBreakerVelocity() end
+end)
+connect(RunService.Heartbeat, function()
+    if breakerRoot then restoreBreakerVelocity() end
+    if not running or paused or not config.AIBreaker
+        or not config.AutoAttach or not enemyModel(target) then return end
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root, enemyRoot = rootOf(character), rootOf(target)
+    if not (humanoid and humanoid.Health > 0 and root and enemyRoot)
+        or root.Anchored then return end
+    local velocity
+    if config.AIBreakerType == "Passive" then
+        velocity = Vector3.new(16, -1e5, -16)
+    elseif config.AIBreakerType == "Circular" then
+        local now = os.clock()
+        velocity = Vector3.new(math.cos(now) * 20, -1e4, math.sin(now) * 20)
+    elseif config.AIBreakerType == "Aggressive" then
+        velocity = Vector3.new(0, -9e9, 0) - (enemyRoot.Position - root.Position)
+    else
+        velocity = Vector3.new(16, -750, -16)
+    end
+    breakerRoot = root
+    breakerSavedVelocity = root.AssemblyLinearVelocity
+    root.AssemblyLinearVelocity = velocity
+end)
+connect(RunService.PreRender, function()
+    if breakerRoot then restoreBreakerVelocity() end
+end)
+
+task.spawn(function()
+    while running do
+        if not runtime.paused and config.AutoStat and fetch then
+            local character = player.Character
+            local status = character and character:FindFirstChild("Status")
+            local changes = status and status:FindFirstChild("Changes")
+            local stat = changes and changes:FindFirstChild(config.Stat)
+            local cap = stat and tonumber(stat:GetAttribute("Max"))
+            if stat and (not cap or stat.Value < cap) then
+                local ok, data = pcall(function() return fetch:InvokeServer() end)
+                local points = ok and type(data) == "table"
+                    and type(data.CoreData) == "table"
+                    and tonumber(data.CoreData.StatPoints) or 0
+                if points >= 1 and running and not runtime.paused and config.AutoStat then
+                    pcall(function()
+                        action:FireServer("StatDump", {Stat = config.Stat, Dump = 1})
+                    end)
+                end
+            end
+        end
+        task.wait(1.25)
+    end
+end)
+
+local mobSignature, bossSignature, skillSignature, teleportSignature = "", "", "", ""
+local function refreshDropdowns()
+    refreshCatalog()
+    local mobNames = sortedNames(MOB_NAMES)
+    local signature = table.concat(mobNames, "\n")
+    if signature ~= mobSignature then
+        mobSignature = signature
+        local selected = {}
+        for _, name in ipairs(mobNames) do
+            if config.SelectedMobs[name] then selected[name] = true end
+        end
+        refreshingMobs = true
+        Options.JungleMobTargets:SetValues(mobNames)
+        Options.JungleMobTargets:SetValue(selected)
+        refreshingMobs = false
+        Options.JungleMobSettingTarget:SetValues(mobNames)
+        if not table.find(mobNames, Options.JungleMobSettingTarget.Value) then
+            Options.JungleMobSettingTarget:SetValue(mobNames[1])
+        end
+        refreshMobSettings()
+    end
+    local bossNames = sortedNames(BOSS_NAMES)
+    signature = table.concat(bossNames, "\n")
+    if signature ~= bossSignature then
+        bossSignature = signature
+        local selected = {}
+        for _, name in ipairs(bossNames) do
+            if config.SelectedBosses[name] then selected[name] = true end
+        end
+        refreshingBosses = true
+        Options.JungleBossTargets:SetValues(bossNames)
+        Options.JungleBossTargets:SetValue(selected)
+        refreshingBosses = false
+    end
+    local names = {}
+    for name in pairs(MOB_NAMES) do names[name] = true end
+    for name in pairs(BOSS_NAMES) do names[name] = true end
+    names.Apex, names["Prime Apex"] = true, true
+    local teleportNames = sortedNames(names)
+    signature = table.concat(teleportNames, "\n")
+    if signature ~= teleportSignature then
+        teleportSignature = signature
+        local selected = Options.JungleMobTeleport.Value
+        Options.JungleMobTeleport:SetValues(teleportNames)
+        if #teleportNames > 0 then
+            Options.JungleMobTeleport:SetValue(
+                table.find(teleportNames, selected) and selected or teleportNames[1])
+        end
+    end
+    local skills = availableSkills()
+    local labels, selectedSkills = {}, {}
+    for _, skill in ipairs(skills) do
+        table.insert(labels, skill.Label)
+        if config.SelectedSkills[skill.Key] then selectedSkills[skill.Label] = true end
+    end
+    signature = table.concat(labels, "\n")
+    if signature ~= skillSignature then
+        skillSignature = signature
+        refreshingSkills = true
+        Options.JungleSkillTargets:SetValues(labels)
+        Options.JungleSkillTargets:SetValue(selectedSkills)
+        refreshingSkills = false
+    end
+end
+refreshDropdowns()
+refreshNPCs()
+task.spawn(function()
+    while running do
+        refreshDropdowns()
+        refreshNPCs()
+        task.wait(1)
+    end
+end)
+
+print("[JungleFarm] Started; live spawn pools and boss markers loaded")
+task.spawn(function()
+    while running do
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local myRoot = rootOf(character)
+        if not (humanoid and humanoid.Health > 0 and myRoot) then
+            target, targetKind = nil, nil
+            task.wait(0.5)
+        elseif paused or not runtime.allowCombat() then
+            target, targetKind = nil, nil
+            task.wait(0.25)
+        else
+            local nextTarget, nextKind = chooseTarget(myRoot.Position)
+            if nextTarget ~= target or nextKind ~= targetKind then
+                target, targetKind = nextTarget, nextKind
+                if target then
+                    print("[JungleFarm] " .. targetKind .. " target: " .. target.Name)
+                end
+            end
+            if not target then
+                campPoint(myRoot)
+                task.wait(0.25)
+            else
+                ensureWeapon(character)
+                if not enemyModel(target) then
+                    target, targetKind = nil, nil
+                    task.wait(0.1)
+                elseif CollectionService:HasTag(target, "Untargetable")
+                    or target:GetAttribute("FightPause") == true then
+                    task.wait(0.2)
+                elseif tryLocalKill(target, targetKind) then
+                    target, targetKind = nil, nil
+                    task.wait(0.65)
+                else
+                    if runtime.allowAttack(character) and os.clock() - lastM1 >= runtime.config.AttackInterval then
+                        local ok, err = pcall(function()
+                            action:FireServer("M1", {password = "Spirit"})
+                        end)
+                        if ok then lastM1 = os.clock()
+                        else warn("[JungleFarm] M1: " .. tostring(err)) end
+                    else
+                        trySkill(character)
+                    end
+                    task.wait(0.1)
+                end
+            end
+        end
+    end
+end)
+end
+runtime.profiles["Arcane Dungeon"]=function()
+-- Arcane spirit dungeon farm. Separate from vampire-farm and Project Rain src.
+-- The saved dungeon has no VampireSoldierSpawn. Its Aetherion boss is an
+-- Enemy-tagged model cloned directly into workspace after the spirit prompt.
+-- The old static SealCatalog does not list Aetherion, so this script discovers
+-- tagged enemies at runtime and waits for the boss's vulnerable phase.
+
+local env = getgenv()
+if type(env.StopArcaneDungeonFarm) == "function" then
+    pcall(env.StopArcaneDungeonFarm)
+end
+
+-- Discard config left by older versions; this run starts from defaults.
+-- Keep settings for this area between hub switches.
+local config = type(env.CloverArcaneConfig)=="table" and env.CloverArcaneConfig or {}
+env.CloverArcaneConfig=config
+local defaults = {
+    Enabled = true,
+    AutoStartBoss = true,
+    AutoAttach = true,
+    AutoEquip = true,
+    AutoSkill = false,
+    AutoStat = false,
+    Stat = "STR",
+    NoRender = false,
+    InstantKill = false,
+    KillThreshold = 5,
+    FollowDistance = 7,
+    XOffset = 0,
+    YOffset = 0,
+    PhaseHover = true,
+    HoverDistance = 320,
+    HoverHeight = 400,
+    SimRadius = 3000,
+    MenuKey = "RightShift",
+    SelectedEnemies = {},
+    SelectedSkills = {},
+}
+for key, value in pairs(defaults) do
+    if config[key] == nil then config[key] = value end
+end
+if type(config.SelectedEnemies) ~= "table" then config.SelectedEnemies = {} end
+if type(config.SelectedSkills) ~= "table" then config.SelectedSkills = {} end
+if type(config.MenuKey) ~= "string" or not Enum.KeyCode[config.MenuKey] then
+    config.MenuKey = "RightShift"
+end
+config.KillThreshold = math.clamp(tonumber(config.KillThreshold) or 5, 0, 100)
+config.FollowDistance = math.clamp(tonumber(config.FollowDistance) or 7, 1, 80)
+config.XOffset = math.clamp(tonumber(config.XOffset) or 0, -80, 80)
+config.YOffset = math.clamp(tonumber(config.YOffset) or 0, -80, 80)
+config.HoverDistance = math.clamp(tonumber(config.HoverDistance) or 320, 80, 800)
+config.HoverHeight = math.clamp(tonumber(config.HoverHeight) or 400, 100, 1000)
+
+local token = {}
+env.ArcaneDungeonLaunchToken = token
+if not game:IsLoaded() then game.Loaded:Wait() end
+if env.ArcaneDungeonLaunchToken ~= token then return end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+local VirtualUser = game:GetService("VirtualUser")
+local player = Players.LocalPlayer
+local replicated = game:GetService("ReplicatedStorage")
+local entities = workspace:WaitForChild("Entities", 15)
+local enemies = entities and entities:WaitForChild("Enemies", 15)
+local package = replicated:WaitForChild("ReplicatedPackage", 15)
+local remotes = package and package:WaitForChild("Remotes", 15)
+local action = remotes and remotes:WaitForChild("action", 15)
+local fetch = remotes and remotes:FindFirstChild("fetch")
+if not (enemies and action) then
+    error("[ArcaneDungeon] Missing Entities.Enemies or ReplicatedPackage.Remotes.action")
+end
+
+local checkModule = package:FindFirstChild("CheckService", true)
+local checkOk, CheckService = pcall(function()
+    return checkModule and require(checkModule)
+end)
+if not checkOk then CheckService = nil end
+
+local spellNames = {}
+local spellFolder = package:FindFirstChild("Spell", true)
+if spellFolder then
+    for _, item in ipairs(spellFolder:GetDescendants()) do
+        if item:IsA("ModuleScript") then spellNames[item.Name] = true end
+    end
+end
+
+if env.ArcaneDungeonLaunchToken ~= token then return end
+local Library,Toggles,Options = runtime.newUI()
+
+local running = true
+local target
+local connections = {}
+local nextPrompt = 0
+local lastPromptAt = -math.huge
+local nextDialogue = 0
+local nextWarn = 0
+local lastM1 = -math.huge
+local lastEquip = -math.huge
+local lastSkill = {}
+local lastBook = -math.huge
+local nextSkill = 1
+local knownEnemies = {Aetherion = true}
+local bossSeen = false
+local bossFinished = false
+local lastKillAttempt = setmetatable({}, {__mode = "k"})
+
+local function connect(signal, callback)
+    local connection = signal:Connect(callback)
+    table.insert(connections, connection)
+    return connection
+end
+
+local function setNoRender(enabled)
+    local ok, err = pcall(function() RunService:Set3dRenderingEnabled(not enabled) end)
+    if ok then config.NoRender = enabled
+    else warn("[ArcaneDungeon] NoRender: " .. tostring(err)) end
+end
+
+env.StopArcaneDungeonFarm = function()
+    if not running then return end
+    running = false
+    for _, connection in ipairs(connections) do connection:Disconnect() end
+    if config.NoRender then setNoRender(false) end
+    if Library and not Library.Unloaded then
+        pcall(function() Library:Unload() end)
+    end
+    target = nil
+    print("[ArcaneDungeon] Stopped")
+end
+
+local function rootOf(model)
+    return model and (model:FindFirstChild("HumanoidRootPart")
+        or model:FindFirstChild("RootPart") or model.PrimaryPart)
+end
+
+local function alive(model)
+    if not (model and model:IsA("Model") and model:IsDescendantOf(workspace)) then
+        return false
+    end
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    return humanoid ~= nil and humanoid.Health > 0 and rootOf(model) ~= nil
+end
+
+local function isEnemy(model)
+    if not alive(model) or model == player.Character then return false end
+    if model:GetAttribute("Dead") or model:GetAttribute("HasKneeled")
+        or model:GetAttribute("FightPause") then return false end
+    return model.Parent == enemies or CollectionService:HasTag(model, "Enemy")
+        or model.Name == "Aetherion"
+end
+
+local function isBoss(model)
+    return model and (model.Name == "Aetherion"
+        or (model:FindFirstChild("Boss") and model.Boss:IsA("BoolValue")
+            and model.Boss.Value))
+end
+
+local function availableSkills()
+    local result = {}
+    local gui = player:FindFirstChildOfClass("PlayerGui")
+    local hud = gui and gui:FindFirstChild("HUD")
+    local bar = hud and hud:FindFirstChild("WeaponSkills")
+    local frame = bar and bar:FindFirstChild("Frame")
+    if frame then
+        for _, slot in ipairs(frame:GetChildren()) do
+            local move = slot:FindFirstChild("MoveName")
+            if slot:FindFirstChild("SkillButton") and move
+                and move.Text == slot.Name and slot.Name ~= "SkillSlot" then
+                table.insert(result, {
+                    Key = "Weapon:" .. slot.Name, Name = slot.Name,
+                    Label = "Weapon | " .. slot.Name, Kind = "Weapon",
+                    Order = slot.LayoutOrder,
+                })
+            end
+        end
+    end
+    local seen = {}
+    for _, container in ipairs({player.Character, player:FindFirstChildOfClass("Backpack")}) do
+        if container then
+            for _, tool in ipairs(container:GetChildren()) do
+                if tool:IsA("Tool") and not seen[tool.Name]
+                    and (spellNames[tool.Name] or tool:GetAttribute("Type") == "Spell"
+                        or tool:GetAttribute("ItemType") == "Spell") then
+                    seen[tool.Name] = true
+                    table.insert(result, {
+                        Key = "Grimoire:" .. tool.Name, Name = tool.Name,
+                        Label = "Grimoire | " .. tool.Name, Kind = "Grimoire",
+                        Order = 100 + (tonumber(tool:GetAttribute("Index")) or 99),
+                        Tool = tool,
+                    })
+                end
+            end
+        end
+    end
+    table.sort(result, function(a, b)
+        return a.Order == b.Order and a.Key < b.Key or a.Order < b.Order
+    end)
+    return result
+end
+
+local function equipWeapon(character)
+    if not config.AutoEquip or os.clock() - lastEquip < 1 then return end
+    if character:FindFirstChild("Weapon") or character:FindFirstChildOfClass("Tool") then return end
+    lastEquip = os.clock()
+    if CheckService then
+        local ok, ready = pcall(function() return CheckService:Equip(character) end)
+        if ok and not ready then return end
+    end
+    pcall(function() action:FireServer("EquipWeapon") end)
+end
+
+local function useSkill(character)
+    if not config.AutoSkill or not runtime.allowCombat() or not alive(target) or runtime.blocked(target) then return false end
+    local status=character:FindFirstChild("Status")
+    local cooldown=status and status:FindFirstChild("Cooldown")
+    local casting=status and status:FindFirstChild("Casting")
+    if not cooldown or (casting and casting.Value) then return false end
+    local root,enemyRoot=rootOf(character),rootOf(target)
+    if not root or not enemyRoot or (root.Position-enemyRoot.Position).Magnitude>18 then return false end
+    local skills=availableSkills()
+    for offset=0,#skills-1 do
+        local index=(nextSkill+offset-1)%#skills+1
+        local skill=skills[index]
+        if config.SelectedSkills[skill.Key] and not cooldown:FindFirstChild(skill.Name)
+            and os.clock()-(lastSkill[skill.Key] or -math.huge)>=1.5 then
+            if skill.Kind=="Weapon" and character:FindFirstChild("Weapon") then
+                local ok,ready=pcall(function() return not CheckService or CheckService:Skill(character,skill.Name) end)
+                if ok and ready then
+                    lastSkill[skill.Key]=os.clock(); nextSkill=index%#skills+1
+                    action:FireServer("Toolbar",{WeaponSkill=skill.Name}); return true
+                end
+            elseif skill.Kind=="Grimoire" then
+                local book=status:FindFirstChild("Grimoire")
+                if book and book:IsA("BoolValue") and not book.Value then
+                    if os.clock()-lastBook>=3 then lastBook=os.clock(); action:FireServer("Book"); return true end
+                elseif skill.Tool and skill.Tool.Enabled then
+                    lastSkill[skill.Key]=os.clock()
+                    local ok,confirmed=pcall(runtime.cast,character,target,skill.Tool,function() return running end)
+                    if ok and confirmed then nextSkill=index%#skills+1; return true end
+                    if not ok then warn("[ArcaneSkill] "..tostring(confirmed)) end
+                end
+            end
+        end
+    end
+    return false
+end
+local function tryLocalKill(model, force)
+    if not (config.InstantKill or force) then return false, "disabled" end
+    if not alive(model) then return false, "no live target" end
+    local humanoid, root = model:FindFirstChildOfClass("Humanoid"), rootOf(model)
+    local threshold = force and 100
+        or math.clamp(tonumber(config.KillThreshold) or 5, 0, 100)
+    if humanoid.MaxHealth <= 0 or humanoid.Health / humanoid.MaxHealth * 100 > threshold then
+        return false, "above HP threshold"
+    end
+    if os.clock() - (lastKillAttempt[model] or -math.huge) < 2 then
+        return false, "attempt cooldown"
+    end
+    if type(isnetworkowner) ~= "function" then return false, "isnetworkowner unavailable" end
+    local ok, owned = pcall(isnetworkowner, root)
+    if not (ok and owned) then return false, "server owns target" end
+    lastKillAttempt[model] = os.clock()
+    local changed, err = pcall(function() humanoid.Health = 0 end)
+    if not changed then return false, tostring(err) end
+    print("[ArcaneDungeon] Local kill attempt: " .. model.Name
+        .. " (watch for server Dead/reward confirmation)")
+    return true, "local attempt sent"
+end
+
+local function candidates()
+    local found, seen = {}, {}
+    local function add(model)
+        if model and not seen[model] and isEnemy(model) then
+            seen[model] = true
+            knownEnemies[model.Name] = true
+            table.insert(found, model)
+        end
+    end
+    for _, model in ipairs(enemies:GetChildren()) do add(model) end
+    for _, model in ipairs(CollectionService:GetTagged("Enemy")) do add(model) end
+    add(workspace:FindFirstChild("Aetherion"))
+    return found
+end
+
+local function chooseTarget(myPosition)
+    local best, score = nil, -math.huge
+    for _, model in ipairs(candidates()) do
+        if isBoss(model) or config.SelectedEnemies[model.Name] ~= false then
+            local root = rootOf(model)
+            local distance = (root.Position - myPosition).Magnitude
+            local rank = (isBoss(model) and 1000000 or 0) - distance
+            if rank > score then best, score = model, rank end
+        end
+    end
+    return best
+end
+
+local function startPrompt()
+    local map = workspace:FindFirstChild("Map")
+    local realm = map and map:FindFirstChild("Arcanespiritrealm")
+    local statue = realm and realm:FindFirstChild("AetherWarGolem")
+    local part = statue and (statue.PrimaryPart or statue:FindFirstChild("RootPart"))
+    local prompt = part and part:FindFirstChildOfClass("ProximityPrompt")
+    return part, prompt
+end
+
+local function dialogueOpen()
+    local gui = player:FindFirstChildOfClass("PlayerGui")
+    local dialogue = gui and gui:FindFirstChild("Dialogue")
+    return dialogue and dialogue:IsA("ScreenGui") and dialogue.Enabled
+end
+
+local function hoverPosition(anchor, distance)
+    local offset = (anchor.CFrame * CFrame.new(0, 0, distance)).Position
+    local altitude = anchor.Position.Y + config.HoverHeight
+    local extras = package:FindFirstChild("Extra_Assets")
+    local spirits = extras and extras:FindFirstChild("SpiritStorage")
+    local arcane = spirits and spirits:FindFirstChild("ArcaneSpiritStorage")
+    local hitboxes = arcane and arcane:FindFirstChild("MoveHitboxes")
+    if hitboxes then
+        for _, part in ipairs(hitboxes:GetChildren()) do
+            if part:IsA("BasePart") then
+                altitude = math.max(altitude,
+                    part.Position.Y + part.Size.Y * 0.5 + 50)
+            end
+        end
+    end
+    return Vector3.new(offset.X, altitude, offset.Z)
+end
+
+local function moveFloating(myRoot, anchor, distance)
+    local position = hoverPosition(anchor, distance)
+    local face = Vector3.new(anchor.Position.X, position.Y, anchor.Position.Z)
+    myRoot.AssemblyLinearVelocity = Vector3.zero
+    myRoot.AssemblyAngularVelocity = Vector3.zero
+    if (face - position).Magnitude > 0.01 then
+        myRoot.CFrame = CFrame.lookAt(position, face)
+    else
+        myRoot.CFrame = CFrame.new(position)
+    end
+end
+
+local function tryDialogueChoice()
+    if os.clock() < nextDialogue then return end
+    local gui = player:FindFirstChildOfClass("PlayerGui")
+    local dialogue = gui and gui:FindFirstChild("Dialogue")
+    if not (dialogue and dialogue:IsA("ScreenGui") and dialogue.Enabled) then return end
+    for _, item in ipairs(dialogue:GetDescendants()) do
+        if (item:IsA("TextButton") or item:IsA("TextLabel")) then
+            local label = item.Text:lower()
+            if (label:find("fight", 1, true) or label:find("challenge", 1, true)
+                or label:find("battle", 1, true))
+                and not (label:find("training", 1, true)
+                    or label:find("leave", 1, true)) then
+                local button = item:IsA("GuiButton") and item
+                    or item:FindFirstAncestorWhichIsA("GuiButton")
+                if button and button.Visible then
+                    local fired = pcall(function()
+                        local vim = game:GetService("VirtualInputManager")
+                        local point = button.AbsolutePosition + button.AbsoluteSize / 2
+                        vim:SendMouseButtonEvent(point.X, point.Y, 0, true, game, 0)
+                        vim:SendMouseButtonEvent(point.X, point.Y, 0, false, game, 0)
+                    end)
+                    if not fired and type(firesignal) == "function" then
+                        fired = pcall(firesignal, button.Activated)
+                        if not fired then
+                            fired = pcall(firesignal, button.MouseButton1Click)
+                        end
+                    end
+                    if fired then
+                        nextDialogue = os.clock() + 5
+                        print("[ArcaneDungeon] Selected fight dialogue: " .. item.Text)
+                    end
+                    return
+                end
+            end
+        end
+    end
+end
+
+local function tryStartBoss(myRoot)
+    if not config.AutoStartBoss or bossFinished then return end
+    if dialogueOpen() or os.clock() < nextPrompt then return end
+    local part, prompt = startPrompt()
+    if not (part and prompt and prompt.Enabled) then return end
+    local distance = (myRoot.Position - part.Position).Magnitude
+    if distance > math.max(5, prompt.MaxActivationDistance - 2) then
+        local destination = (part.CFrame * CFrame.new(0, 0, 5)).Position
+        myRoot.AssemblyLinearVelocity = Vector3.zero
+        myRoot.CFrame = CFrame.lookAt(destination, part.Position)
+        return
+    end
+    nextPrompt = os.clock() + 5
+    if type(fireproximityprompt) == "function" then
+        local ok, err = pcall(fireproximityprompt, prompt)
+        if ok then
+            lastPromptAt = os.clock()
+            print("[ArcaneDungeon] Triggered AetherWarGolem prompt")
+        else
+            warn("[ArcaneDungeon] Prompt failed: " .. tostring(err))
+        end
+    elseif os.clock() >= nextWarn then
+        nextWarn = os.clock() + 15
+        warn("[ArcaneDungeon] fireproximityprompt unavailable; interact with the golem manually")
+    end
+end
+
+Library.MainColor = Color3.fromHex("1b2b34")
+Library.BackgroundColor = Color3.fromHex("16232a")
+Library.AccentColor = Color3.fromHex("6699cc")
+Library.OutlineColor = Color3.fromHex("343d46")
+Library.FontColor = Color3.fromHex("d8dee9")
+local window = Library:CreateWindow({
+    Title = "Arcane Dungeon Farm", Center = true, AutoShow = true,
+    Size = UDim2.fromOffset(600, 520), MenuFadeTime = 0.2,
+})
+runtime.telemetry=function() return {Model=target,Skills=config.AutoSkill and "Enabled" or "Off"} end
+local farmTab = window:AddTab("Arcane Dungeon")
+local combatTab = window:AddTab("Combat")
+local uiTab = window:AddTab("UI")
+local farmBox = farmTab:AddLeftGroupbox("Progression")
+local enemyBox = farmTab:AddRightGroupbox("Targets")
+local attachBox = combatTab:AddLeftGroupbox("Attach")
+local skillBox = combatTab:AddRightGroupbox("Skills and Stats")
+local uiBox = uiTab:AddLeftGroupbox("Window")
+
+farmBox:AddToggle("DungeonEnabled", {Text = "Farm enemies", Default = config.Enabled})
+Toggles.DungeonEnabled:OnChanged(function(v) config.Enabled = v end)
+farmBox:AddToggle("DungeonAutoStart", {Text = "Start Aetherion fight", Default = config.AutoStartBoss})
+Toggles.DungeonAutoStart:OnChanged(function(v) config.AutoStartBoss = v end)
+farmBox:AddButton("Trigger fight now", function()
+    nextPrompt = 0
+    local myRoot = rootOf(player.Character)
+    if myRoot then tryStartBoss(myRoot) end
+end)
+farmBox:AddLabel("Aetherion has priority; normal enemies resume afterward.", true)
+farmBox:AddLabel("The boss is untargetable during attack phases.", true)
+farmBox:AddToggle("DungeonInstantKill", {
+    Text = "Instant kill at HP threshold", Default = config.InstantKill,
+})
+Toggles.DungeonInstantKill:OnChanged(function(v) config.InstantKill = v end)
+farmBox:AddSlider("DungeonKillThreshold", {
+    Text = "Kill HP threshold", Default = config.KillThreshold,
+    Min = 0, Max = 100, Rounding = 0, Suffix = "%",
+})
+Options.DungeonKillThreshold:OnChanged(function(v) config.KillThreshold = v end)
+farmBox:AddInput("DungeonKillThresholdText", {
+    Text = "Threshold %", Default = tostring(config.KillThreshold),
+    Numeric = true, Finished = true,
+})
+Options.DungeonKillThresholdText:OnChanged(function(v)
+    local n = tonumber(v)
+    if n then Options.DungeonKillThreshold:SetValue(math.clamp(math.floor(n + 0.5), 0, 100)) end
+end)
+farmBox:AddButton("Instant kill current boss", function()
+    if not (target and target.Name == "Aetherion") then
+        warn("[ArcaneDungeon] No live Aetherion target")
+        return
+    end
+    if CollectionService:HasTag(target, "Untargetable") then
+        warn("[ArcaneDungeon] Aetherion is in an untargetable phase")
+        return
+    end
+    local ok, reason = tryLocalKill(target, true)
+    if not ok then warn("[ArcaneDungeon] Instant kill attempt: " .. tostring(reason)) end
+end)
+farmBox:AddLabel("Local kill requires network ownership; check server reward.", true)
+
+enemyBox:AddDropdown("DungeonEnemyTargets", {
+    Text = "Normal enemies", Values = {}, Multi = true, Default = {},
+})
+local refreshingEnemies = false
+Options.DungeonEnemyTargets:OnChanged(function(selected)
+    if refreshingEnemies or type(selected) ~= "table" then return end
+    for name in pairs(knownEnemies) do
+        if name ~= "Aetherion" then config.SelectedEnemies[name] = selected[name] == true end
+    end
+end)
+enemyBox:AddButton("Select all", function()
+    local selected = {}
+    for name in pairs(knownEnemies) do
+        if name ~= "Aetherion" then selected[name] = true end
+    end
+    Options.DungeonEnemyTargets:SetValue(selected)
+end)
+enemyBox:AddButton("Deselect all", function()
+    Options.DungeonEnemyTargets:SetValue({})
+end)
+enemyBox:AddLabel("New enemy names appear as they spawn.", true)
+
+attachBox:AddToggle("DungeonAutoAttach", {Text = "Auto Attach", Default = config.AutoAttach})
+Toggles.DungeonAutoAttach:OnChanged(function(v) config.AutoAttach = v end)
+attachBox:AddSlider("DungeonDistance", {
+    Text = "Back distance", Default = config.FollowDistance,
+    Min = 1, Max = 80, Rounding = 1, Suffix = " studs",
+})
+Options.DungeonDistance:OnChanged(function(v) config.FollowDistance = v end)
+attachBox:AddSlider("DungeonXOffset", {
+    Text = "Side offset", Default = config.XOffset,
+    Min = -80, Max = 80, Rounding = 1,
+})
+Options.DungeonXOffset:OnChanged(function(v) config.XOffset = v end)
+attachBox:AddSlider("DungeonYOffset", {
+    Text = "Height offset", Default = config.YOffset,
+    Min = -80, Max = 80, Rounding = 1,
+})
+Options.DungeonYOffset:OnChanged(function(v) config.YOffset = v end)
+attachBox:AddToggle("DungeonPhaseHover", {
+    Text = "Float during dialogue / invulnerability",
+    Default = config.PhaseHover,
+})
+Toggles.DungeonPhaseHover:OnChanged(function(v) config.PhaseHover = v end)
+attachBox:AddSlider("DungeonHoverDistance", {
+    Text = "Boss wait distance", Default = config.HoverDistance,
+    Min = 80, Max = 800, Rounding = 0, Suffix = " studs",
+})
+Options.DungeonHoverDistance:OnChanged(function(v) config.HoverDistance = v end)
+attachBox:AddSlider("DungeonHoverHeight", {
+    Text = "Air height", Default = config.HoverHeight,
+    Min = 100, Max = 1000, Rounding = 0, Suffix = " studs",
+})
+Options.DungeonHoverHeight:OnChanged(function(v) config.HoverHeight = v end)
+
+skillBox:AddToggle("DungeonAutoEquip", {Text = "Auto equip weapon", Default = config.AutoEquip})
+Toggles.DungeonAutoEquip:OnChanged(function(v) config.AutoEquip = v end)
+skillBox:AddToggle("DungeonAutoSkill", {Text = "Auto Skill", Default = config.AutoSkill})
+Toggles.DungeonAutoSkill:OnChanged(function(v) config.AutoSkill = v end)
+skillBox:AddDropdown("DungeonSkillTargets", {
+    Text = "Equipped skills", Values = {}, Multi = true, Default = {},
+})
+local refreshingSkills = true
+Options.DungeonSkillTargets:OnChanged(function(selected)
+    if refreshingSkills or type(selected) ~= "table" then return end
+    for _, skill in ipairs(availableSkills()) do
+        config.SelectedSkills[skill.Key] = selected[skill.Label] == true
+    end
+end)
+skillBox:AddDropdown("DungeonStat", {
+    Text = "Stat", Values = {"STR", "DEX", "INT", "CON"}, Default = config.Stat,
+})
+Options.DungeonStat:OnChanged(function(v) config.Stat = v end)
+skillBox:AddToggle("DungeonAutoStat", {Text = "Auto Stat", Default = config.AutoStat})
+Toggles.DungeonAutoStat:OnChanged(function(v) config.AutoStat = v end)
+
+uiBox:AddToggle("DungeonNoRender", {Text = "NoRender", Default = config.NoRender})
+Toggles.DungeonNoRender:OnChanged(setNoRender)
+uiBox:AddLabel("Show / hide key"):AddKeyPicker("DungeonMenuKey", {
+    Default = config.MenuKey, NoUI = true, Mode = "Toggle",
+    Text = "Toggle menu",
+})
+Library.ToggleKeybind = Options.DungeonMenuKey
+Options.DungeonMenuKey:OnChanged(function(value) config.MenuKey = value end)
+uiBox:AddButton("Hide window", function() Library:Toggle() end)
+uiBox:AddButton("Stop farm", function() env.StopArcaneDungeonFarm() end)
+Library:OnUnload(function()
+    Library.Unloaded = true
+    if running then env.StopArcaneDungeonFarm() end
+end)
+
+if config.NoRender then setNoRender(true) end
+connect(player.Idled, function()
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.zero)
+    end)
+end)
+
+local radiusElapsed = 0
+connect(RunService.Heartbeat, function(dt)
+    radiusElapsed += dt
+    if radiusElapsed < 0.05 then return end
+    radiusElapsed = 0
+    if type(sethiddenproperty) == "function" then
+        pcall(sethiddenproperty, player, "MaxSimulationRadius", config.SimRadius)
+        pcall(sethiddenproperty, player, "SimulationRadius", config.SimRadius)
+    end
+end)
+
+connect(RunService.PostSimulation, function()
+    if not running or not runtime.allowCombat() or not config.Enabled then return end
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local myRoot = rootOf(character)
+    if not (humanoid and humanoid.Health > 0 and myRoot) then return end
+
+    if config.PhaseHover then
+        if dialogueOpen() or os.clock() - lastPromptAt < 4.5 then
+            local statuePart = startPrompt()
+            if statuePart then
+                moveFloating(myRoot, statuePart, 0)
+                return
+            end
+        end
+        if alive(target) and target.Name == "Aetherion"
+            and CollectionService:HasTag(target, "Untargetable") then
+            moveFloating(myRoot, rootOf(target), config.HoverDistance)
+            return
+        end
+    end
+
+    if not config.AutoAttach or not alive(target) then return end
+    local enemyRoot = rootOf(target)
+    if not enemyRoot then return end
+    local position = (enemyRoot.CFrame * CFrame.new(
+        math.clamp(tonumber(config.XOffset) or 0, -80, 80),
+        math.clamp(tonumber(config.YOffset) or 0, -80, 80),
+        math.clamp(tonumber(config.FollowDistance) or 7, 1, 80)
+    )).Position
+    myRoot.AssemblyLinearVelocity = Vector3.zero
+    myRoot.AssemblyAngularVelocity = Vector3.zero
+    local face = Vector3.new(enemyRoot.Position.X, position.Y, enemyRoot.Position.Z)
+    if (face - position).Magnitude > 0.01 then
+        myRoot.CFrame = CFrame.lookAt(position, face)
+    else
+        myRoot.CFrame = CFrame.new(position)
+    end
+end)
+
+task.spawn(function()
+    while running do
+        if not runtime.paused and config.AutoStat and fetch then
+            local character = player.Character
+            local status = character and character:FindFirstChild("Status")
+            local changes = status and status:FindFirstChild("Changes")
+            local stat = changes and changes:FindFirstChild(config.Stat)
+            local cap = stat and tonumber(stat:GetAttribute("Max"))
+            if stat and (not cap or stat.Value < cap) then
+                local ok, data = pcall(function() return fetch:InvokeServer() end)
+                local points = ok and type(data) == "table"
+                    and type(data.CoreData) == "table"
+                    and tonumber(data.CoreData.StatPoints) or 0
+                if points >= 1 and running and not runtime.paused and config.AutoStat then
+                    pcall(function()
+                        action:FireServer("StatDump", {Stat = config.Stat, Dump = 1})
+                    end)
+                end
+            end
+        end
+        task.wait(1.25)
+    end
+end)
+
+local enemySignature, skillSignature = "", ""
+task.spawn(function()
+    while running do
+        candidates()
+        local names = {}
+        local selected = {}
+        for name in pairs(knownEnemies) do
+            if name ~= "Aetherion" then
+                table.insert(names, name)
+                if config.SelectedEnemies[name] ~= false then selected[name] = true end
+            end
+        end
+        table.sort(names)
+        local signature = table.concat(names, "\n")
+        if signature ~= enemySignature then
+            enemySignature = signature
+            refreshingEnemies = true
+            Options.DungeonEnemyTargets:SetValues(names)
+            Options.DungeonEnemyTargets:SetValue(selected)
+            refreshingEnemies = false
+        end
+        local skills = availableSkills()
+        local labels, selectedSkills = {}, {}
+        for _, skill in ipairs(skills) do
+            table.insert(labels, skill.Label)
+            if config.SelectedSkills[skill.Key] then selectedSkills[skill.Label] = true end
+        end
+        signature = table.concat(labels, "\n")
+        if signature ~= skillSignature then
+            skillSignature = signature
+            refreshingSkills = true
+            Options.DungeonSkillTargets:SetValues(labels)
+            Options.DungeonSkillTargets:SetValue(selectedSkills)
+            refreshingSkills = false
+        end
+        task.wait(0.5)
+    end
+end)
+
+print("[ArcaneDungeon] Started; waiting for dynamic enemies / Aetherion")
+task.spawn(function()
+    while running do
+        local character = player.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local myRoot = rootOf(character)
+        if not (humanoid and humanoid.Health > 0 and myRoot) then
+            target = nil
+            task.wait(0.5)
+        elseif not config.Enabled or not runtime.allowCombat() then
+            target = nil
+            task.wait(0.25)
+        else
+            local chosen = chooseTarget(myRoot.Position)
+            if chosen ~= target then
+                target = chosen
+                if target then
+                    print("[ArcaneDungeon] Target: " .. target.Name)
+                end
+            end
+            if target then
+                if target.Name == "Aetherion" then bossSeen = true end
+                if target:GetAttribute("Dead") or target:GetAttribute("HasKneeled") then
+                    if target.Name == "Aetherion" then bossFinished = true end
+                    target = nil
+                else
+                    equipWeapon(character)
+                    local invulnerable = CollectionService:HasTag(target, "Untargetable")
+                        or target:GetAttribute("FightPause") == true
+                    if not invulnerable then
+                        if not tryLocalKill(target) then
+                            if runtime.allowAttack(character) and os.clock() - lastM1 >= runtime.config.AttackInterval then
+                                local ok, err = pcall(function()
+                                    action:FireServer("M1", {password = "Spirit"})
+                                end)
+                                if ok then lastM1 = os.clock()
+                                else warn("[ArcaneDungeon] M1: " .. tostring(err)) end
+                            else
+                                useSkill(character)
+                            end
+                        end
+                    end
+                end
+            else
+                if bossSeen and not workspace:FindFirstChild("Aetherion") then
+                    bossFinished = true
+                end
+                tryStartBoss(myRoot)
+                tryDialogueChoice()
+            end
+            task.wait(0.1)
+        end
+    end
+end)
+end
+runtime.profiles.Explorer=runtime.explorer
+env.StopCloverHub=function()
+    runtime.switchSerial+=1
+    runtime.stopProfiles()
+end
+if type(readfile)=="function" and type(isfile)=="function" then
+    local ok,data=pcall(function()
+        if not isfile("CloverHub-settings.json") then return nil end
+        return game:GetService("HttpService"):JSONDecode(readfile("CloverHub-settings.json"))
+    end)
+    if ok and type(data)=="table" then
+        if type(data.Hub)=="table" then for key,value in pairs(data.Hub) do
+            if runtime.config[key]~=nil and type(value)==type(runtime.config[key]) then runtime.config[key]=value end
+        end end
+        if type(data.World)=="table" then env.VampireFarmConfig=data.World end
+        if type(data.Jungle)=="table" then env.CloverJungleConfig=data.Jungle end
+        if type(data.Arcane)=="table" then env.CloverArcaneConfig=data.Arcane end
+    end
+end
+if not game:IsLoaded() then game.Loaded:Wait() end
+local detected=runtime.detect()
+print("[CloverHub] Detected profile: "..detected.." | PlaceId "..game.PlaceId)
+runtime.switch(detected)
