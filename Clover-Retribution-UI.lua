@@ -262,7 +262,7 @@ local function createCloverLibrary()
     local Tween = game:GetService("TweenService")
     local toggles, options, connections = {}, {}, {}
     local lib = {Unloaded = false, ToggleKeybind = false :: any}
-    local colors = {bg = Color3.fromRGB(15,17,16), panel = Color3.fromRGB(23,25,23),
+    local colors = {bg = Color3.fromRGB(13,15,14), panel = Color3.fromRGB(21,23,21),
         field = Color3.fromRGB(34,37,32), line = Color3.fromRGB(49,53,44),
         text = Color3.fromRGB(239,242,231), muted = Color3.fromRGB(155,162,147),
         accent = Color3.fromRGB(190,219,65)}
@@ -288,8 +288,19 @@ local function createCloverLibrary()
     local function button(parent, text)
         local b = make("TextButton", {Text=text, BackgroundColor3=colors.field,
             TextColor3=colors.text, Font=Enum.Font.Gotham, TextSize=12,
-            AutoButtonColor=true, BorderSizePixel=0}, parent)
+            AutoButtonColor=false, BorderSizePixel=0, TextTruncate=Enum.TextTruncate.AtEnd}, parent)
         round(b, 8)
+        local hoverColor
+        b.MouseEnter:Connect(function()
+            if b:GetAttribute("NoHover") then return end
+            hoverColor=b.BackgroundColor3
+            Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=hoverColor:Lerp(colors.text,.055)}):Play()
+        end)
+        b.MouseLeave:Connect(function()
+            if hoverColor and not b:GetAttribute("NoHover") then
+                Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=hoverColor}):Play()
+            end
+        end)
         return b
     end
     local function observable(initial)
@@ -306,7 +317,23 @@ local function createCloverLibrary()
     local screen = make("ScreenGui", {Name="CloverDashboard", ResetOnSpawn=false,
         ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=80}, player:WaitForChild("PlayerGui"))
     local window
-    function lib:Toggle() if window then window.Visible=not window.Visible end end
+    local wantedVisible=true
+    local visibilitySerial=0
+    local windowTween
+    function lib:Toggle()
+        if not window or self.Unloaded then return end
+        wantedVisible=not wantedVisible
+        visibilitySerial+=1
+        local serial=visibilitySerial
+        if windowTween then windowTween:Cancel() end
+        if wantedVisible then window.Visible=true end
+        windowTween=Tween:Create(window,TweenInfo.new(.16,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
+            {GroupTransparency=wantedVisible and 0 or 1})
+        windowTween.Completed:Once(function()
+            if serial==visibilitySerial and not wantedVisible and not self.Unloaded then window.Visible=false end
+        end)
+        windowTween:Play()
+    end
     function lib:OnUnload(callback) self.unloadCallback=callback end
     function lib:Unload()
         if self.Unloaded then return end
@@ -316,7 +343,7 @@ local function createCloverLibrary()
         if self.unloadCallback then self.unloadCallback() end
     end
     function lib:CreateWindow(settings)
-        window=make("Frame", {Size=UDim2.fromOffset(820,550), AnchorPoint=Vector2.new(.5,.5),
+        window=make("CanvasGroup", {GroupTransparency=0,Size=UDim2.fromOffset(820,550), AnchorPoint=Vector2.new(.5,.5),
             Position=UDim2.fromScale(.5,.5), BackgroundColor3=colors.bg, BorderSizePixel=0}, screen)
         round(window,14)
         make("UIStroke", {Color=colors.line, Thickness=1}, window)
@@ -411,7 +438,7 @@ local function createCloverLibrary()
             end
             function g:AddToggle(id,data)
                 local r=row(); local l=label(r,data.Text); l.Size=UDim2.new(1,-50,1,0)
-                local b=button(r,""); b.Size=UDim2.fromOffset(38,22); b.Position=UDim2.new(1,-38,.5,-11)
+                local b=button(r,""); b:SetAttribute("NoHover",true); b.Size=UDim2.fromOffset(38,22); b.Position=UDim2.new(1,-38,.5,-11)
                 local dot=make("Frame",{Size=UDim2.fromOffset(16,16),BackgroundColor3=colors.text,BorderSizePixel=0},b); round(dot,20)
                 local o=observable(data.Default==true); toggles[id]=o
                 o.render=function()
@@ -435,12 +462,12 @@ local function createCloverLibrary()
             function g:AddSlider(id,data)
                 local r=row(50); local sliderLabel=label(r,data.Text,11); sliderLabel.Size=UDim2.new(.7,0,0,22)
                 local valueLabel=label(r,"",11); valueLabel.Size=UDim2.new(.3,0,0,22); valueLabel.Position=UDim2.fromScale(.7,0); valueLabel.TextXAlignment=Enum.TextXAlignment.Right
-                local track=button(r,""); track.Size=UDim2.new(1,0,0,8); track.Position=UDim2.fromOffset(0,34)
+                local track=button(r,""); track:SetAttribute("NoHover",true); track.Size=UDim2.new(1,0,0,8); track.Position=UDim2.fromOffset(0,34)
                 local fill=make("Frame",{BackgroundColor3=colors.accent,BorderSizePixel=0,Size=UDim2.fromScale(0,1)},track); round(fill,8)
                 local o=observable(data.Default or data.Min); options[id]=o
                 o.render=function()
                     valueLabel.Text=tostring(o.Value)
-                    fill.Size=UDim2.fromScale(math.clamp((o.Value-data.Min)/(data.Max-data.Min),0,1),1)
+                    Tween:Create(fill,TweenInfo.new(.09),{Size=UDim2.fromScale(math.clamp((o.Value-data.Min)/(data.Max-data.Min),0,1),1)}):Play()
                 end
                 local sliding=false
                 local function update(x)
@@ -506,9 +533,9 @@ local function createCloverLibrary()
         end
         local result={}
         function result:AddTab(name)
-            local tabButton=button(nav,name); tabButton.Size=UDim2.new(1,0,0,36); tabButton.TextXAlignment=Enum.TextXAlignment.Left
+            local tabButton=button(nav,name); tabButton:SetAttribute("NoHover",true); tabButton.Size=UDim2.new(1,0,0,36); tabButton.TextXAlignment=Enum.TextXAlignment.Left
             make("UIPadding",{PaddingLeft=UDim.new(0,12)},tabButton)
-            local page=make("ScrollingFrame",{BackgroundTransparency=1,BorderSizePixel=0,
+            local page=make("ScrollingFrame",{BackgroundTransparency=1,BorderSizePixel=0,ClipsDescendants=true,
                 Position=UDim2.fromOffset(200,52),Size=UDim2.new(1,-218,1,-68),ScrollBarThickness=3,
                 ScrollBarImageColor3=colors.accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,Visible=first},window)
             local columns={}
@@ -517,12 +544,19 @@ local function createCloverLibrary()
                     Size=UDim2.new(.5,-8,0,0),AutomaticSize=Enum.AutomaticSize.Y},page)
                 make("UIListLayout",{Padding=UDim.new(0,14),SortOrder=Enum.SortOrder.LayoutOrder},columns[i])
             end
-            local entry={page=page,button=tabButton,name=name}; table.insert(pages,entry)
+                        local indicator=make("Frame",{BackgroundColor3=colors.accent,BorderSizePixel=0,
+                Position=UDim2.fromOffset(0,9),Size=UDim2.fromOffset(3,18),Visible=first},tabButton)
+            round(indicator,3)
+            local entry={page=page,button=tabButton,name=name,indicator=indicator}; table.insert(pages,entry)
             local function activate()
                 header.Text=string.upper(name).."  /  CLOVER RETRIBUTION"
                 for _,item in ipairs(pages) do
-                    local selected=item==entry; item.page.Visible=selected
-                    item.button.BackgroundColor3=selected and Color3.fromRGB(39,46,24) or colors.panel
+                    local selected=item==entry; item.page.Visible=selected; item.indicator.Visible=selected
+                    if selected then
+                        item.page.Position=UDim2.fromOffset(208,52)
+                        Tween:Create(item.page,TweenInfo.new(.14,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=UDim2.fromOffset(200,52)}):Play()
+                    end
+                    Tween:Create(item.button,TweenInfo.new(.14),{BackgroundColor3=selected and Color3.fromRGB(39,46,24) or colors.panel}):Play()
                     item.button.TextColor3=selected and colors.accent or colors.muted
                 end
             end
@@ -533,6 +567,104 @@ local function createCloverLibrary()
             function tab:AddRightGroupbox(title) return group(columns[2],title) end
             return tab
         end
+        return result
+    end
+    function lib:CreateHUD(settings)
+        local hud=make("CanvasGroup",{Name="StatusHUD",BackgroundColor3=colors.panel,BorderSizePixel=0,
+            Position=UDim2.fromOffset(24,110),Size=UDim2.fromOffset(284,306),GroupTransparency=1,
+            Visible=settings.Visible~=false},screen)
+        round(hud,13)
+        make("UIStroke",{Color=colors.line,Thickness=1},hud)
+        local hudScale=make("UIScale",{},hud)
+        local function fitHUD()
+            local camera=workspace.CurrentCamera
+            if camera then hudScale.Scale=math.max(.55,math.min(1,(camera.ViewportSize.X-32)/284,(camera.ViewportSize.Y-40)/306)) end
+        end
+        local hudViewportConnection
+        local function bindHUDCamera()
+            if hudViewportConnection then hudViewportConnection:Disconnect() end
+            local camera=workspace.CurrentCamera
+            if camera then hudViewportConnection=connect(camera:GetPropertyChangedSignal("ViewportSize"),fitHUD) end
+            fitHUD()
+        end
+        bindHUDCamera(); connect(workspace:GetPropertyChangedSignal("CurrentCamera"),bindHUDCamera)
+        local brand=label(hud,"CLOVER",14); brand.Font=Enum.Font.GothamBold
+        brand.TextColor3=colors.accent; brand.Position=UDim2.fromOffset(14,10); brand.Size=UDim2.fromOffset(130,24)
+        local titleDrag=make("TextButton",{Text="",BackgroundTransparency=1,Position=UDim2.fromOffset(0,0),Size=UDim2.new(1,-38,0,42)},hud)
+        local collapse=button(hud,"−"); collapse.Size=UDim2.fromOffset(24,24); collapse.Position=UDim2.new(1,-35,0,10)
+        local separator=make("Frame",{BackgroundColor3=colors.line,BorderSizePixel=0,Position=UDim2.fromOffset(12,42),Size=UDim2.new(1,-24,0,1)},hud)
+        local content=make("Frame",{BackgroundTransparency=1,Position=UDim2.fromOffset(14,52),Size=UDim2.new(1,-28,0,240)},hud)
+        local fields={}
+        for i,entry in ipairs({{"Mode","Mode"},{"Target","Target"},{"Skills","Skills"},{"Time","Session"}}) do
+            local name=label(content,entry[2],11); name.TextColor3=colors.muted
+            name.Position=UDim2.fromOffset(0,(i-1)*25); name.Size=UDim2.new(.32,0,0,22)
+            local value=label(content,"—",11); value.Position=UDim2.new(.32,0,0,(i-1)*25)
+            value.Size=UDim2.new(.68,0,0,22); value.TextXAlignment=Enum.TextXAlignment.Right; value.TextTruncate=Enum.TextTruncate.AtEnd
+            fields[entry[1]]=value
+        end
+        local function bar(title,y,color)
+            local text=label(content,title,11); text.Position=UDim2.fromOffset(0,y); text.Size=UDim2.new(1,0,0,20)
+            local track=make("Frame",{BackgroundColor3=colors.field,BorderSizePixel=0,Position=UDim2.fromOffset(0,y+24),Size=UDim2.new(1,0,0,5)},content); round(track,5)
+            local fill=make("Frame",{BackgroundColor3=color,BorderSizePixel=0,Size=UDim2.fromScale(0,1)},track); round(fill,5)
+            return {text=text,fill=fill,fraction=-1}
+        end
+        local ownHealth=bar("Your HP",104,colors.accent)
+        local enemyHealth=bar("Target HP",143,Color3.fromRGB(125,166,242))
+        local pause=button(content,"Pause farm"); pause.Position=UDim2.fromOffset(0,193); pause.Size=UDim2.new(.5,-4,0,29)
+        local menu=button(content,"Open menu"); menu.Position=UDim2.new(.5,4,0,193); menu.Size=UDim2.new(.5,-4,0,29)
+        connect(pause.Activated,function() if settings.OnPause then settings.OnPause() end end)
+        connect(menu.Activated,function() if not wantedVisible then lib:Toggle() end end)
+        local dragging,dragStart,startPosition,touch
+        connect(titleDrag.InputBegan,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+                dragging=true; dragStart=input.Position; startPosition=hud.Position; touch=input
+            end
+        end)
+        connect(UIS.InputChanged,function(input)
+            if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input==touch) then
+                local delta=input.Position-dragStart
+                hud.Position=UDim2.new(startPosition.X.Scale,startPosition.X.Offset+delta.X,startPosition.Y.Scale,startPosition.Y.Offset+delta.Y)
+            end
+        end)
+        connect(UIS.InputEnded,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input==touch then dragging=false end
+        end)
+        local collapsed=false
+        connect(collapse.Activated,function()
+            collapsed=not collapsed; collapse.Text=collapsed and "+" or "−"
+            content.Visible=not collapsed; separator.Visible=not collapsed
+            Tween:Create(hud,TweenInfo.new(.16,Enum.EasingStyle.Quad),{Size=UDim2.fromOffset(284,collapsed and 44 or 306)}):Play()
+        end)
+        local hudTween
+        local hudVisibilitySerial=0
+        local result={}
+        function result:SetVisible(value)
+            hudVisibilitySerial+=1
+            local serial=hudVisibilitySerial
+            if hudTween then hudTween:Cancel() end
+            if value then hud.Visible=true end
+            hudTween=Tween:Create(hud,TweenInfo.new(.16),{GroupTransparency=value and 0 or 1})
+            hudTween.Completed:Once(function() if serial==hudVisibilitySerial and not value and not lib.Unloaded then hud.Visible=false end end)
+            hudTween:Play()
+        end
+        local function updateBar(item,title,health,maxHealth)
+            local fraction=maxHealth and maxHealth>0 and math.clamp(health/maxHealth,0,1) or 0
+            item.text.Text=maxHealth and maxHealth>0 and (title.."  "..math.floor(fraction*100+.5).."%") or title.."  —"
+            if math.abs(fraction-item.fraction)>.001 then
+                item.fraction=fraction
+                Tween:Create(item.fill,TweenInfo.new(.22,Enum.EasingStyle.Quad),{Size=UDim2.fromScale(fraction,1)}):Play()
+            end
+        end
+        function result:Update(data)
+            for key,field in pairs(fields) do
+                local nextText=tostring(data[key] or "—")
+                if field.Text~=nextText then field.Text=nextText end
+            end
+            pause.Text=data.Paused and "Resume farm" or "Pause farm"
+            updateBar(ownHealth,"Your HP",data.Health or 0,data.MaxHealth)
+            updateBar(enemyHealth,"Target HP",data.TargetHealth or 0,data.TargetMaxHealth)
+        end
+        result:SetVisible(settings.Visible~=false)
         return result
     end
     return lib,toggles,options
@@ -741,6 +873,16 @@ do
     Options.FarmCameraDistance:OnChanged(function(value) env.VampireFarmConfig.FarmCameraDistance=value end)
 end
 local uiBox = uiTab:AddLeftGroupbox("Window")
+do
+    local hudBox=uiTab:AddRightGroupbox("Live Status HUD")
+    if type(env.VampireFarmConfig.HUDEnabled)~="boolean" then env.VampireFarmConfig.HUDEnabled=true end
+    hudBox:AddToggle("CloverHUDEnabled",{Text="Show status HUD",Default=env.VampireFarmConfig.HUDEnabled})
+    Toggles.CloverHUDEnabled:OnChanged(function(value)
+        env.VampireFarmConfig.HUDEnabled=value
+        if golem.HUD then golem.HUD:SetVisible(value) end
+    end)
+    hudBox:AddLabel("The HUD stays visible when the main menu is hidden. Drag its title to move it; use − to collapse it.",true)
+end
 
 local function addDropdownSearch(groupbox, dropdownId, label)
     local dropdown = Options[dropdownId]
@@ -2866,6 +3008,39 @@ task.spawn(function()
         task.wait(0.25)
     end
 end)
+golem.HUD=Library:CreateHUD({Visible=env.VampireFarmConfig.HUDEnabled,OnPause=function()
+    teleportPaused=not teleportPaused
+    if teleportPaused then
+        target=nil; targetSource=nil
+        restoreCamera(); restoreBreakerVelocity()
+    end
+end})
+task.spawn(function()
+    local startedAt=os.clock()
+    while running and not Library.Unloaded do
+        local character=player.Character
+        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        local targetHumanoid=target and target:FindFirstChildOfClass("Humanoid")
+        local status=character and character:FindFirstChild("Status")
+        local casting=status and status:FindFirstChild("Casting")
+        local elapsed=math.floor(os.clock()-startedAt)
+        local skillStatus="Off"
+        if env.VampireFarmConfig.AutoSkillEnabled then
+            if casting and casting.Value then skillStatus="Casting"
+            elseif not target then skillStatus="Waiting for target"
+            else skillStatus="Enabled" end
+        end
+        local mode=teleportPaused and "Paused" or (targetSource or activeMode)
+        if targetSource=="Base" and not teleportPaused then mode=activeMode end
+        golem.HUD:Update({Mode=mode,Target=target and target.Name or "Waiting…",Skills=skillStatus,
+            Time=string.format("%02d:%02d:%02d",math.floor(elapsed/3600),math.floor(elapsed/60)%60,elapsed%60),
+            Health=humanoid and humanoid.Health or 0,MaxHealth=humanoid and humanoid.MaxHealth,
+            TargetHealth=targetHumanoid and targetHumanoid.Health or 0,TargetMaxHealth=targetHumanoid and targetHumanoid.MaxHealth,
+            Paused=teleportPaused})
+        task.wait(.25)
+    end
+end)
+
 local function updateTarget(fromPosition)
     local primeApex
     if env.VampireFarmConfig.PrimeApexFarmEnabled then
