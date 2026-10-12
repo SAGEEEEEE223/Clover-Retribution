@@ -32,11 +32,32 @@ local function createCloverLibrary()
             TextColor3=colors.text, Font=Enum.Font.Gotham, TextSize=size or 13,
             TextXAlignment=Enum.TextXAlignment.Left, Size=UDim2.new(1,0,0,22)}, parent)
     end
+    local motionTweens={}
+    local function animate(object,duration,properties,style)
+        if motionTweens[object] then motionTweens[object]:Cancel() end
+        local tween=Tween:Create(object,TweenInfo.new(duration,style or Enum.EasingStyle.Quint,Enum.EasingDirection.Out),properties)
+        motionTweens[object]=tween
+        tween.Completed:Once(function() if motionTweens[object]==tween then motionTweens[object]=nil end end)
+        tween:Play()
+        return tween
+    end
     local function button(parent, text)
         local b = make("TextButton", {Text=text, BackgroundColor3=colors.field,
             TextColor3=colors.text, Font=Enum.Font.Gotham, TextSize=12,
             AutoButtonColor=false, BorderSizePixel=0, TextTruncate=Enum.TextTruncate.AtEnd}, parent)
         round(b, 8)
+        local pressScale=make("UIScale",{Scale=1},b)
+        connect(b.InputBegan,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+                animate(pressScale,.09,{Scale=.96},Enum.EasingStyle.Quad)
+            end
+        end)
+        connect(b.InputEnded,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+                animate(pressScale,.22,{Scale=1},Enum.EasingStyle.Back)
+            end
+        end)
+        connect(b.MouseLeave,function() animate(pressScale,.18,{Scale=1}) end)
         local hoverColor
         b.MouseEnter:Connect(function()
             if b:GetAttribute("NoHover") then return end
@@ -73,6 +94,7 @@ local function createCloverLibrary()
     local window
     local wantedVisible=true
     local visibilitySerial=0
+    local windowScale,windowBaseScale= nil,1
     local windowTween
     function lib:Toggle()
         if not window or self.Unloaded then return end
@@ -81,6 +103,10 @@ local function createCloverLibrary()
         local serial=visibilitySerial
         if windowTween then windowTween:Cancel() end
         if wantedVisible then window.Visible=true end
+        if windowScale then
+            if wantedVisible and not windowTween then windowScale.Scale=windowBaseScale*.92 end
+            animate(windowScale,wantedVisible and .3 or .15,{Scale=windowBaseScale*(wantedVisible and 1 or .94)},wantedVisible and Enum.EasingStyle.Back or Enum.EasingStyle.Quad)
+        end
         windowTween=Tween:Create(window,TweenInfo.new(.16,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),
             {GroupTransparency=wantedVisible and 0 or 1})
         windowTween.Completed:Once(function()
@@ -93,6 +119,7 @@ local function createCloverLibrary()
     function lib:Unload()
         if self.Unloaded then return end
         self.Unloaded=true
+        for object,tween in pairs(motionTweens) do tween:Cancel(); motionTweens[object]=nil end
         for _, c in ipairs(connections) do c:Disconnect() end
         for _,callback in ipairs(self.CleanupCallbacks) do pcall(callback) end
         screen:Destroy()
@@ -103,10 +130,10 @@ local function createCloverLibrary()
             Position=UDim2.fromScale(.5,.5), BackgroundColor3=colors.bg, BorderSizePixel=0}, screen)
         round(window,14)
         make("UIStroke", {Color=colors.line, Thickness=1}, window)
-        local scale=make("UIScale", {}, window)
+        local scale=make("UIScale", {}, window); windowScale=scale
         local function resize()
             local camera=workspace.CurrentCamera
-            if camera then scale.Scale=math.min(1, (camera.ViewportSize.X-24)/820, (camera.ViewportSize.Y-24)/550) end
+            if camera then windowBaseScale=math.max(.2,math.min(1, (camera.ViewportSize.X-24)/820, (camera.ViewportSize.Y-24)/550)); scale.Scale=windowBaseScale end
         end
         resize()
         local viewportConnection
@@ -200,7 +227,7 @@ local function createCloverLibrary()
                 local o=observable(data.Default==true,id); toggles[id]=o
                 o.render=function()
                     b.BackgroundColor3=o.Value and colors.accent or colors.field
-                    Tween:Create(dot,TweenInfo.new(.12),{Position=UDim2.fromOffset(o.Value and 19 or 3,3)}):Play()
+                    animate(dot,.2,{Position=UDim2.fromOffset(o.Value and 19 or 3,3)},Enum.EasingStyle.Back)
                 end
                 o.render(); connect(b.Activated,function() o:SetValue(not o.Value) end); return o
             end
@@ -311,7 +338,8 @@ local function createCloverLibrary()
                     local selected=item==entry; item.page.Visible=selected; item.indicator.Visible=selected
                     if selected then
                         item.page.Position=UDim2.fromOffset(208,52)
-                        Tween:Create(item.page,TweenInfo.new(.14,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=UDim2.fromOffset(200,52)}):Play()
+                        animate(item.page,.22,{Position=UDim2.fromOffset(200,52)})
+                        item.indicator.Size=UDim2.fromOffset(3,6); animate(item.indicator,.25,{Size=UDim2.fromOffset(3,18)},Enum.EasingStyle.Back)
                     end
                     Tween:Create(item.button,TweenInfo.new(.14),{BackgroundColor3=selected and Color3.fromRGB(39,46,24) or colors.panel}):Play()
                     item.button.TextColor3=selected and colors.accent or colors.muted
@@ -324,6 +352,9 @@ local function createCloverLibrary()
             function tab:AddRightGroupbox(title) return group(columns[2],title) end
             return tab
         end
+        window.GroupTransparency=1; scale.Scale=windowBaseScale*.92
+        animate(scale,.36,{Scale=windowBaseScale},Enum.EasingStyle.Back)
+        animate(window,.22,{GroupTransparency=0})
         runtime.configureUI(lib,result,toggles,options)
         return result
     end
@@ -334,9 +365,10 @@ local function createCloverLibrary()
         round(hud,13)
         make("UIStroke",{Color=colors.line,Thickness=1},hud)
         local hudScale=make("UIScale",{},hud)
+        local hudBaseScale=1
         local function fitHUD()
             local camera=workspace.CurrentCamera
-            if camera then hudScale.Scale=math.max(.55,math.min(1,(camera.ViewportSize.X-32)/284,(camera.ViewportSize.Y-40)/306)) end
+            if camera then hudBaseScale=math.max(.55,math.min(1,(camera.ViewportSize.X-32)/284,(camera.ViewportSize.Y-40)/306)); hudScale.Scale=hudBaseScale end
         end
         local hudViewportConnection
         local function bindHUDCamera()
@@ -391,16 +423,21 @@ local function createCloverLibrary()
         connect(collapse.Activated,function()
             collapsed=not collapsed; collapse.Text=collapsed and "+" or "−"
             content.Visible=not collapsed; separator.Visible=not collapsed
-            Tween:Create(hud,TweenInfo.new(.16,Enum.EasingStyle.Quad),{Size=UDim2.fromOffset(284,collapsed and 44 or 306)}):Play()
+            animate(hud,.25,{Size=UDim2.fromOffset(284,collapsed and 44 or 306)})
         end)
         local hudTween
         local hudVisibilitySerial=0
         local result={}
         function result:SetVisible(value)
+            if hud.Visible==value and ((value and hud.GroupTransparency==0) or (not value and hud.GroupTransparency==1)) then return end
             hudVisibilitySerial+=1
             local serial=hudVisibilitySerial
             if hudTween then hudTween:Cancel() end
-            if value then hud.Visible=true end
+            if value then
+                if not hud.Visible or not hudTween then hudScale.Scale=hudBaseScale*.88 end
+                hud.Visible=true
+            end
+            animate(hudScale,value and .32 or .15,{Scale=hudBaseScale*(value and 1 or .92)},value and Enum.EasingStyle.Back or Enum.EasingStyle.Quad)
             hudTween=Tween:Create(hud,TweenInfo.new(.16),{GroupTransparency=value and 0 or 1})
             hudTween.Completed:Once(function() if serial==hudVisibilitySerial and not value and not lib.Unloaded then hud.Visible=false end end)
             hudTween:Play()
@@ -410,13 +447,16 @@ local function createCloverLibrary()
             item.text.Text=maxHealth and maxHealth>0 and (title.."  "..math.floor(fraction*100+.5).."%") or title.."  —"
             if math.abs(fraction-item.fraction)>.001 then
                 item.fraction=fraction
-                Tween:Create(item.fill,TweenInfo.new(.22,Enum.EasingStyle.Quad),{Size=UDim2.fromScale(fraction,1)}):Play()
+                animate(item.fill,.25,{Size=UDim2.fromScale(fraction,1)})
             end
         end
         function result:Update(data)
             for key,field in pairs(fields) do
                 local nextText=tostring(data[key] or "—")
-                if field.Text~=nextText then field.Text=nextText end
+                if field.Text~=nextText then
+                    field.Text=nextText
+                    if key=="Target" or key=="Mode" then field.TextTransparency=.45; animate(field,.2,{TextTransparency=0}) end
+                end
             end
             pause.Text=data.Paused and "Resume farm" or "Pause farm"
             updateBar(ownHealth,"Your HP",data.Health or 0,data.MaxHealth)
