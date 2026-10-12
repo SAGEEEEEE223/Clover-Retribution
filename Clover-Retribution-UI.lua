@@ -2,7 +2,7 @@
 local env=getgenv()
 if type(env.StopCloverHub)=="function" then pcall(env.StopCloverHub) end
 local player=game:GetService("Players").LocalPlayer
-local runtime={}
+local runtime={controls={},saveSerial=0}
 env.CloverRuntime=runtime
 local function createCloverLibrary()
     local UIS = game:GetService("UserInputService")
@@ -50,7 +50,12 @@ local function createCloverLibrary()
         end)
         return b
     end
-    local function observable(initial)
+    local function observable(initial,id)
+        local scope=tostring(runtime.profile or "Shared")..":"..tostring(id)
+        local saved=runtime.controls[scope]
+        if saved~=nil and (initial==nil or type(saved)==type(initial)) then
+            initial=type(saved)=="table" and table.clone(saved) or saved
+        end
         local o = {Value=initial}
         function o:OnChanged(callback) self.callback=callback; callback(self.Value) end
         function o:SetValue(value)
@@ -58,6 +63,8 @@ local function createCloverLibrary()
             self.Value=value
             if self.render then self.render() end
             if self.callback then self.callback(value) end
+            runtime.controls[scope]=type(self.Value)=="table" and table.clone(self.Value) or self.Value
+            if runtime.requestSave then runtime.requestSave() end
         end
         return o
     end
@@ -167,7 +174,7 @@ local function createCloverLibrary()
                 local result={}
                 function result:SetText(text) l.Text=tostring(text) end
                 function result:AddKeyPicker(id,data)
-                    local o=observable(data.Default); options[id]=o
+                    local o=observable(data.Default,id); options[id]=o
                     local b=button(r,tostring(o.Value)); b.Size=UDim2.fromOffset(94,24); b.Position=UDim2.new(1,-94,0,0)
                     local listening=false
                     o.render=function() b.Text=tostring(o.Value); hint.Text=tostring(o.Value).." to show / hide" end
@@ -190,7 +197,7 @@ local function createCloverLibrary()
                 local r=row(); local l=label(r,data.Text); l.Size=UDim2.new(1,-50,1,0)
                 local b=button(r,""); b:SetAttribute("NoHover",true); b.Size=UDim2.fromOffset(38,22); b.Position=UDim2.new(1,-38,.5,-11)
                 local dot=make("Frame",{Size=UDim2.fromOffset(16,16),BackgroundColor3=colors.text,BorderSizePixel=0},b); round(dot,20)
-                local o=observable(data.Default==true); toggles[id]=o
+                local o=observable(data.Default==true,id); toggles[id]=o
                 o.render=function()
                     b.BackgroundColor3=o.Value and colors.accent or colors.field
                     Tween:Create(dot,TweenInfo.new(.12),{Position=UDim2.fromOffset(o.Value and 19 or 3,3)}):Play()
@@ -203,7 +210,7 @@ local function createCloverLibrary()
                     ClearTextOnFocus=false,BackgroundColor3=colors.field,TextColor3=colors.text,
                     PlaceholderColor3=colors.muted,Font=Enum.Font.Gotham,TextSize=12,
                     Size=UDim2.new(1,0,0,29),Position=UDim2.fromOffset(0,25),BorderSizePixel=0},r); round(b,8)
-                local o=observable(tostring(data.Default or "")); options[id]=o
+                local o=observable(tostring(data.Default or ""),id); options[id]=o
                 o.render=function() if b.Text~=tostring(o.Value) then b.Text=tostring(o.Value) end end
                 local function changed() o:SetValue(b.Text) end
                 if data.Finished==false then connect(b:GetPropertyChangedSignal("Text"),changed) else connect(b.FocusLost,changed) end
@@ -214,7 +221,7 @@ local function createCloverLibrary()
                 local valueLabel=label(r,"",11); valueLabel.Size=UDim2.new(.3,0,0,22); valueLabel.Position=UDim2.fromScale(.7,0); valueLabel.TextXAlignment=Enum.TextXAlignment.Right
                 local track=button(r,""); track:SetAttribute("NoHover",true); track.Size=UDim2.new(1,0,0,8); track.Position=UDim2.fromOffset(0,34)
                 local fill=make("Frame",{BackgroundColor3=colors.accent,BorderSizePixel=0,Size=UDim2.fromScale(0,1)},track); round(fill,8)
-                local o=observable(data.Default or data.Min); options[id]=o
+                local o=observable(data.Default or data.Min,id); options[id]=o
                 o.render=function()
                     valueLabel.Text=tostring(o.Value)
                     Tween:Create(fill,TweenInfo.new(.09),{Size=UDim2.fromScale(math.clamp((o.Value-data.Min)/(data.Max-data.Min),0,1),1)}):Play()
@@ -249,7 +256,7 @@ local function createCloverLibrary()
                     if type(initial)=="table" then for k,v in pairs(initial) do if type(k)=="number" then selected[v]=true elseif v then selected[k]=true end end end
                     initial=selected
                 elseif type(initial)=="number" then initial=(data.Values or {})[initial] end
-                local o=observable(initial); o.Values=table.clone(data.Values or {}); options[id]=o
+                local o=observable(initial,id); o.Values=table.clone(data.Values or {}); options[id]=o
                 local choices={}
                 function o:Display()
                     if data.Multi then
@@ -653,10 +660,11 @@ function runtime.configureUI(library,window,toggles,options)
     info:AddLabel("Seal Archive: cards need Seal Openers to activate their bonuses. Farming alone does not unlock the Archive.",true)
     info:AddLabel("Arcane Dungeon handles its own boss prompt and invulnerable phases. Explorer targets live Enemy-tagged models in other areas.",true)
     local settings=tab:AddLeftGroupbox("Settings")
+    settings:AddLabel("Changes save automatically and restore on reload.",true)
     toggle(settings,"HubHUD","Show live HUD","HUDEnabled")
     settings:AddButton("Save settings",function()
         if type(writefile)~="function" then warn("[CloverHub] writefile unavailable"); return end
-        local data={Hub=cfg,World=env.VampireFarmConfig,Jungle=env.CloverJungleConfig,Arcane=env.CloverArcaneConfig}
+        local data={Hub=cfg,World=env.VampireFarmConfig,Jungle=env.CloverJungleConfig,Arcane=env.CloverArcaneConfig,Controls=runtime.controls}
         local ok,err=pcall(function() writefile("CloverHub-settings.json",game:GetService("HttpService"):JSONEncode(data)) end)
         if ok then print("[CloverHub] Saved settings") else warn(err) end
     end)
@@ -828,6 +836,23 @@ function runtime.explorer()
     end)
 end
 
+function runtime.saveSettings()
+    if type(writefile)~="function" then
+        if not runtime.saveUnavailable then warn("[CloverHub] Automatic saving requires executor writefile support"); runtime.saveUnavailable=true end
+        return false
+    end
+    local data={Hub=runtime.config,World=env.VampireFarmConfig,Jungle=env.CloverJungleConfig,Arcane=env.CloverArcaneConfig,Controls=runtime.controls}
+    local ok,err=pcall(function() writefile("CloverHub-settings.json",game:GetService("HttpService"):JSONEncode(data)) end)
+    if not ok then warn("[CloverHub] Settings save failed: "..tostring(err)) end
+    return ok
+end
+function runtime.requestSave()
+    runtime.saveSerial+=1
+    local serial=runtime.saveSerial
+    task.delay(.4,function()
+        if serial==runtime.saveSerial and env.CloverRuntime==runtime then runtime.saveSettings() end
+    end)
+end
 runtime.newUI=function() return createCloverLibrary() end
 runtime.profiles["First Kingdom"]=function()
 print("[CloverStartup] Starting camera, skill, and health update")
@@ -5517,6 +5542,7 @@ if type(readfile)=="function" and type(isfile)=="function" then
         return game:GetService("HttpService"):JSONDecode(readfile("CloverHub-settings.json"))
     end)
     if ok and type(data)=="table" then
+        if type(data.Controls)=="table" then runtime.controls=data.Controls end
         if type(data.Hub)=="table" then for key,value in pairs(data.Hub) do
             if runtime.config[key]~=nil and type(value)==type(runtime.config[key]) then runtime.config[key]=value end
         end end
