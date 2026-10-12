@@ -352,9 +352,17 @@ local function createCloverLibrary()
             function tab:AddRightGroupbox(title) return group(columns[2],title) end
             return tab
         end
-        window.GroupTransparency=1; scale.Scale=windowBaseScale*.92
-        animate(scale,.36,{Scale=windowBaseScale},Enum.EasingStyle.Back)
-        animate(window,.22,{GroupTransparency=0})
+        window.GroupTransparency=1; window.Visible=false
+        function lib:PlayEntrance()
+            if self.Unloaded then return end
+            window.Visible=true
+            local destination=window.Position
+            window.Position=destination+UDim2.fromOffset(0,40)
+            window.GroupTransparency=1; scale.Scale=windowBaseScale*.78
+            animate(scale,.75,{Scale=windowBaseScale},Enum.EasingStyle.Back)
+            animate(window,.65,{GroupTransparency=0,Position=destination})
+            if self.HUDEntrance then self.HUDEntrance() end
+        end
         runtime.configureUI(lib,result,toggles,options)
         return result
     end
@@ -429,16 +437,25 @@ local function createCloverLibrary()
         local hudVisibilitySerial=0
         local result={}
         function result:SetVisible(value)
+            if runtime.starting then
+                hud.Visible=false; hud.GroupTransparency=1
+                lib.HUDEntrance=function()
+                    if lib.Unloaded then return end
+                    hud.Visible=false; hudTween=nil
+                    result:SetVisible(value)
+                end
+                return
+            end
             if hud.Visible==value and ((value and hud.GroupTransparency==0) or (not value and hud.GroupTransparency==1)) then return end
             hudVisibilitySerial+=1
             local serial=hudVisibilitySerial
             if hudTween then hudTween:Cancel() end
             if value then
-                if not hud.Visible or not hudTween then hudScale.Scale=hudBaseScale*.88 end
+                if not hud.Visible or not hudTween then hudScale.Scale=hudBaseScale*.75 end
                 hud.Visible=true
             end
-            animate(hudScale,value and .32 or .15,{Scale=hudBaseScale*(value and 1 or .92)},value and Enum.EasingStyle.Back or Enum.EasingStyle.Quad)
-            hudTween=Tween:Create(hud,TweenInfo.new(.16),{GroupTransparency=value and 0 or 1})
+            animate(hudScale,value and .75 or .2,{Scale=hudBaseScale*(value and 1 or .92)},value and Enum.EasingStyle.Back or Enum.EasingStyle.Quad)
+            hudTween=Tween:Create(hud,TweenInfo.new(value and .5 or .2),{GroupTransparency=value and 0 or 1})
             hudTween.Completed:Once(function() if serial==hudVisibilitySerial and not value and not lib.Unloaded then hud.Visible=false end end)
             hudTween:Play()
         end
@@ -635,6 +652,7 @@ function runtime.switch(profile)
     env.VampireFarmLaunchToken={}; env.JungleFarmLaunchToken={}; env.ArcaneDungeonLaunchToken={}
     runtime.profile=profile; runtime.paused=false; runtime.resting=false; runtime.telemetry=nil
     runtime.config.Profile=profile
+    runtime.starting=true
     task.spawn(function()
         if serial~=runtime.switchSerial or env.CloverRuntime~=runtime then return end
         local ok,err=xpcall(runtime.profiles[profile],debug.traceback)
@@ -646,6 +664,16 @@ function runtime.switch(profile)
             local status=window:AddTab("Startup error"):AddLeftGroupbox("Profile unavailable")
             status:AddLabel(tostring(err):sub(1,220),true)
             status:AddLabel("Select another area in Hub. Missing objects may not be streamed in yet.",true)
+        end
+        if serial==runtime.switchSerial and env.CloverRuntime==runtime then
+            runtime.starting=false
+            task.defer(function()
+                game:GetService("RunService").RenderStepped:Wait()
+                if serial==runtime.switchSerial and runtime.library and not runtime.library.Unloaded then
+                    runtime.library:PlayEntrance()
+                    print("[CloverHub] Startup animation v2")
+                end
+            end)
         end
     end)
 end
