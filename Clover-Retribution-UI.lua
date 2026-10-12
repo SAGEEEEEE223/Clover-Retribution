@@ -491,7 +491,7 @@ env.CloverHubConfig=runtime.config
 for key,value in pairs({AutoM1=true,AttackInterval=.65,ManaRest=false,ManaLow=15,ManaResume=60,
     ESPMobs=false,ESPPlayers=false,ESPNPCs=false,ESPRange=1500,AutoCollect=false,CollectRange=30,
     CollectChests=true,CollectDrops=true,CollectResources=false,AutoQuestPrompt=false,
-    AutoReset=false,ResetHP=20,HUDEnabled=true,CameraDistance=14,CoffinAhead=5}) do
+    AutoReset=false,ResetHP=20,AutoStaminaReset=true,ResetStamina=10,HUDEnabled=true,CameraDistance=14,CoffinAhead=5}) do
     if runtime.config[key]==nil then runtime.config[key]=value end
 end
 runtime.profiles={}
@@ -534,6 +534,23 @@ function runtime.mana()
     if not max and sibling and (sibling:IsA("NumberValue") or sibling:IsA("IntValue")) then max=sibling.Value end
     if not max or max<=0 then return nil end
     return math.clamp(value.Value/max*100,0,100)
+end
+function runtime.stamina()
+    local character=player.Character
+    if not character then return nil end
+    local status=character:FindFirstChild("Status")
+    local value=status and status:FindFirstChild("Stamina",true)
+    local current,max
+    if value and (value:IsA("NumberValue") or value:IsA("IntValue")) then
+        current=value.Value
+        max=tonumber(value:GetAttribute("Max")) or tonumber(value:GetAttribute("MaxValue"))
+        local sibling=value.Parent:FindFirstChild("MaxStamina")
+        if not max and sibling and (sibling:IsA("NumberValue") or sibling:IsA("IntValue")) then max=sibling.Value end
+    end
+    current=current or tonumber(character:GetAttribute("Stamina")) or (status and tonumber(status:GetAttribute("Stamina")))
+    max=max or tonumber(character:GetAttribute("MaxStamina")) or (status and tonumber(status:GetAttribute("MaxStamina")))
+    if not current or not max or max<=0 or current~=current or max~=max then return nil end
+    return math.clamp(current/max*100,0,100)
 end
 function runtime.allowCombat()
     if runtime.paused then return false end
@@ -705,6 +722,10 @@ function runtime.configureUI(library,window,toggles,options)
     local health=tab:AddRightGroupbox("Survival")
     toggle(health,"HubReset","Auto reset at low HP","AutoReset")
     slider(health,"HubResetHP","Reset HP (%)","ResetHP",1,90)
+    toggle(health,"HubStaminaReset","Auto reset at low stamina","AutoStaminaReset")
+    slider(health,"HubResetStamina","Reset stamina (%)","ResetStamina",1,50)
+    local staminaLabel=health:AddLabel("Stamina: waiting for current / maximum values",true)
+    health:AddLabel("Stamina reset starts enabled at 10%. Waits 15 seconds after spawning and 1 second below the threshold.",true)
     local visuals=window:AddTab("Visuals"):AddLeftGroupbox("ESP")
     toggle(visuals,"HubESPMobs","Mob / boss ESP","ESPMobs")
     toggle(visuals,"HubESPPlayers","Player ESP","ESPPlayers")
@@ -752,6 +773,8 @@ function runtime.configureUI(library,window,toggles,options)
     local promptLookup={}
     local resetCharacter
     local resetSent=false
+    local staminaReadyAt=os.clock()+15
+    local staminaLowSince
     task.spawn(function()
         while not library.Unloaded and env.CloverRuntime==runtime and runtime.library==library do
             local data=runtime.telemetry and runtime.telemetry() or {}
@@ -768,7 +791,20 @@ function runtime.configureUI(library,window,toggles,options)
                 Health=humanoid and humanoid.Health or 0,MaxHealth=humanoid and humanoid.MaxHealth,
                 TargetHealth=targetHumanoid and targetHumanoid.Health or 0,TargetMaxHealth=targetHumanoid and targetHumanoid.MaxHealth,Paused=runtime.paused})
             if seenHUD~=cfg.HUDEnabled then seenHUD=cfg.HUDEnabled; hud:SetVisible(seenHUD) end
-            if character~=resetCharacter then resetCharacter=character; resetSent=false end
+            if character~=resetCharacter then
+                resetCharacter=character; resetSent=false; staminaReadyAt=os.clock()+15; staminaLowSince=nil
+            end
+            local stamina=runtime.stamina()
+            staminaLabel:SetText(stamina and string.format("Stamina: %.0f%%",stamina) or "Stamina: current / maximum unavailable")
+            if cfg.AutoStaminaReset and not runtime.paused and stamina and stamina<=cfg.ResetStamina
+                and os.clock()>=staminaReadyAt and humanoid and humanoid.Health>0 then
+                staminaLowSince=staminaLowSince or os.clock()
+            else staminaLowSince=nil end
+            if staminaLowSince and os.clock()-staminaLowSince>=1 and not resetSent then
+                local ok,err=pcall(function() humanoid.Health=0 end)
+                if ok then resetSent=true; print("[CloverHub] Low stamina reset requested")
+                else staminaLowSince=nil; warn("[CloverHub] Stamina reset failed: "..tostring(err)) end
+            end
             if cfg.AutoReset and not resetSent and humanoid and humanoid.MaxHealth>0 and humanoid.Health>0
                 and humanoid.Health/humanoid.MaxHealth*100<=cfg.ResetHP then
                 resetSent=true; pcall(function() humanoid.Health=0 end)
@@ -5623,3 +5659,4 @@ if not game:IsLoaded() then game.Loaded:Wait() end
 local detected=runtime.detect()
 print("[CloverHub] Detected profile: "..detected.." | PlaceId "..game.PlaceId)
 runtime.switch(detected)
+runtime.requestSave()
