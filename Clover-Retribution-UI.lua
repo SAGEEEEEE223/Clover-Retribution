@@ -1462,6 +1462,8 @@ kaldrisInfo:AddLabel("Farm starts OFF. Enable boss combat only when you are insi
 kaldrisInfo:AddLabel("Cinder Sigils: your item description lists fire mages and charred netherwings. Summoning consumes a sigil at the Ember Altar.",true)
 kaldrisBox:AddToggle("KaldrisCombat",{Text="Fight spawned Kaldris only",Default=false})
 Toggles.KaldrisCombat:OnChanged(function(enabled)
+    -- OnChanged runs immediately while later controls are still being constructed.
+    if not Options.BossTargets or not Toggles.BossFarmEnabled then return end
     if Toggles.VampireFarmEnabled then Toggles.VampireFarmEnabled:SetValue(false) end
     if Toggles.MobFarmEnabled then Toggles.MobFarmEnabled:SetValue(false) end
     for _,id in ipairs({"ApexFarmEnabled","PrimeApexFarmEnabled","GolemFarmEnabled","AutoChestLootEnabled"}) do
@@ -2096,9 +2098,9 @@ task.spawn(function()
 end)
 
 combatBox:AddToggle("VampireInstantKill", {
-    Text = "Finish with normal combat",
+    Text = "Instant kill attempt (unconfirmed)",
     Default = env.VampireFarmConfig.InstantKillEnabled,
-    Tooltip = "Local health writes were removed. M1 and skills continue until the target is no longer alive.",
+    Tooltip = "Attempts client health manipulation at the HP threshold. Server kills and rewards are not guaranteed.",
 })
 Toggles.VampireInstantKill:OnChanged(function(value)
     env.VampireFarmConfig.InstantKillEnabled = value
@@ -3229,8 +3231,20 @@ combatBox:AddButton("Print instant-kill status", function()
     golem.reportKillGate(target, reason, true)
 end)
 local function tryOwnedMobLocalKill(model)
-    -- Client-side health writes cannot verify server death and break target tracking.
-    -- Keep the target and let the existing M1/skill loop finish it normally.
+    local reason,humanoid=golem.inspectKill(model)
+    if not humanoid then return false end
+    local previous=humanoid.Health
+    local ok,err=pcall(function() humanoid.Health=0 end)
+    attemptedMobs[model]=true
+    if not ok then golem.reportKillGate(model,tostring(err),false); return false end
+    golem.reportKillGate(model,"Unconfirmed local kill attempt; normal combat remains enabled",true)
+    task.delay(.5,function()
+        if not running or not model.Parent or not humanoid.Parent then return end
+        if humanoid.Health<=0 and model:GetAttribute("Dead")~=true then
+            pcall(function() humanoid.Health=previous end)
+            warn("[CloverKill] No authoritative death marker; restored client health for target tracking")
+        end
+    end)
     return false
 end
 local kaldrisDodgeUntil=0
