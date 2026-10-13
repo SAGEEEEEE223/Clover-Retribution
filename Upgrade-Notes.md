@@ -24,3 +24,6 @@ Every execution starts with farming, automatic attacks, automatic skills, collec
 - No live Roblox combat, ore collection, dive avoidance or server-side kill success has been verified for this merge.
 
 Stamina detection remains separate from mana. Missing stamina data is not evidence of low stamina.
+
+## Jungle farming follow-up
+Jungle_Island is now recognized before First Kingdom detection. Mob discovery and spawn routing search nested folders, support dictionary and array spawn pools, and skip disabled spawns. Choose mobs under Jungle Mobs before enabling Auto Mob Farm; enabling it also enables M1/following and clears pause. New mobs remain unselected. Refresh mobs and routes and Print mob routes assist with streamed camps. Luau compilation and mocked spawn-route tests passed; live gameplay still requires testing.

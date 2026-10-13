@@ -563,6 +563,7 @@ function runtime.detect()
     if (map and map:FindFirstChild("Arcanespiritrealm")) or workspace:FindFirstChild("Aetherion") then return "Arcane Dungeon" end
     local e=workspace:FindFirstChild("Entities")
     local sp=e and e:FindFirstChild("Spawns")
+    if map and (map:FindFirstChild("Jungle_Island") or map:FindFirstChild("Jungle") or map:FindFirstChild("JungleMap")) then return "Jungle" end
     if sp and sp:FindFirstChild("VampireSoldierSpawn") then
         for _,mob in ipairs((e:FindFirstChild("Enemies") or e):GetChildren()) do
             if mob.Name=="Rogue Magic Knight" or mob.Name=="Mossback Mammoth" or mob.Name=="Alpha Crocodile" then return "Jungle" end
@@ -4950,11 +4951,11 @@ if type(env.StopJungleFarm) == "function" then pcall(env.StopJungleFarm) end
 if type(env.StopVampireFarm) == "function" then pcall(env.StopVampireFarm) end
 
 local config = {
-    MobFarm = true,
-    BossFarm = true,
-    ApexFarm = true,
-    PrimeApexFarm = true,
-    AutoAttach = true,
+    MobFarm = false,
+    BossFarm = false,
+    ApexFarm = false,
+    PrimeApexFarm = false,
+    AutoAttach = false,
     FollowDistance = 5,
     XOffset = 0,
     YOffset = 0,
@@ -5007,15 +5008,18 @@ if not (enemies and spawns and action) then
     error("[JungleFarm] Missing Entities.Enemies, Entities.Spawns, or action remote")
 end
 
-local checkModule = package.LocalServices:FindFirstChild("CheckService")
+local services=package:FindFirstChild("LocalServices")
+local checkModule = services and services:FindFirstChild("CheckService")
 local checkOk, CheckService = pcall(function() return require(checkModule) end)
 if not checkOk then CheckService = nil end
-local catalogModule = package.Modules:FindFirstChild("SealCatalog")
+local modules=package:FindFirstChild("Modules")
+local catalogModule = modules and modules:FindFirstChild("SealCatalog")
 local catalogOk, SealCatalog = pcall(function() return require(catalogModule) end)
 if not catalogOk then SealCatalog = nil end
 
 local spellNames = {}
-local spellFolder = package.LocalServices.Database:FindFirstChild("Spell")
+local database=services and services:FindFirstChild("Database")
+local spellFolder = database and database:FindFirstChild("Spell")
 if spellFolder then
     for _, item in ipairs(spellFolder:GetDescendants()) do
         if item:IsA("ModuleScript") then spellNames[item.Name] = true end
@@ -5037,10 +5041,11 @@ if SealCatalog and type(SealCatalog.Seals) == "table" then
 end
 
 local function rootOf(model)
-    return model and (model:FindFirstChild("HumanoidRootPart")
-        or model:FindFirstChild("RootPart") or model.PrimaryPart)
+    local root=runtime.getRoot(model)
+    if root then return root end
+    local alternate=model and model:FindFirstChild("RootPart")
+    return alternate and alternate:IsA("BasePart") and alternate or nil
 end
-
 local function alive(model)
     if not (model and model:IsA("Model") and model:IsDescendantOf(workspace)) then
         return false
@@ -5051,21 +5056,41 @@ local function alive(model)
 end
 
 local function enemyModel(model)
-    return alive(model) and (model.Parent == enemies
+    return alive(model) and not Players:GetPlayerFromCharacter(model) and (model:IsDescendantOf(enemies)
         or CollectionService:HasTag(model, "Enemy")
         or model:GetAttribute("CollisionGroup") == "Enemy")
 end
 
 local function spawnPool(part)
-    local pool = part:GetAttribute("spawn_pool")
-    if type(pool) ~= "string" then return {} end
-    local ok, decoded = pcall(function() return HttpService:JSONDecode(pool) end)
-    return ok and type(decoded) == "table" and decoded or {}
+    local raw=part:GetAttribute("spawn_pool")
+    if type(raw)~="string" or raw=="" then return {} end
+    local ok,pool=pcall(function() return HttpService:JSONDecode(raw) end)
+    if not ok or type(pool)~="table" then return {} end
+    local names={}
+    for key,value in pairs(pool) do
+        if type(key)=="string" and key~="" and value~=false and value~=0 then
+            names[key]=true
+        elseif type(key)=="number" then
+            local name=type(value)=="string" and value or type(value)=="table" and (value.name or value.Name)
+            if type(name)=="string" and name~="" then names[name]=true end
+        end
+    end
+    return names
 end
-
+local function spawnParts()
+    local parts={}
+    for _,part in ipairs(spawns:GetDescendants()) do
+        if part:IsA("BasePart") and part:GetAttribute("spawn_pool")~=nil then table.insert(parts,part) end
+    end
+    return parts
+end
+local function spawnUsable(part)
+    return part and part:IsA("BasePart") and part:IsDescendantOf(spawns)
+        and part:GetAttribute("spawn_enabled")~=false and part:GetAttribute("Active")~=false
+end
 local function refreshCatalog()
-    for _, model in ipairs(enemies:GetChildren()) do
-        if alive(model) and not SPECIAL_BOSSES[model.Name] then
+    for _, model in ipairs(enemies:GetDescendants()) do
+        if enemyModel(model) and not SPECIAL_BOSSES[model.Name] then
             local bossValue = model:FindFirstChild("Boss")
             if BOSS_NAMES[model.Name]
                 or (bossValue and bossValue:IsA("BoolValue") and bossValue.Value) then
@@ -5076,7 +5101,7 @@ local function refreshCatalog()
             end
         end
     end
-    for _, part in ipairs(spawns:GetChildren()) do
+    for _, part in ipairs(spawnParts()) do
         if part:IsA("BasePart") then
             for name in pairs(spawnPool(part)) do
                 if not (BOSS_NAMES[name] or SPECIAL_BOSSES[name]) then
@@ -5086,10 +5111,10 @@ local function refreshCatalog()
         end
     end
     for name in pairs(MOB_NAMES) do
-        if config.SelectedMobs[name] == nil then config.SelectedMobs[name] = true end
+        if config.SelectedMobs[name] == nil then config.SelectedMobs[name] = false end
     end
     for name in pairs(BOSS_NAMES) do
-        if config.SelectedBosses[name] == nil then config.SelectedBosses[name] = true end
+        if config.SelectedBosses[name] == nil then config.SelectedBosses[name] = false end
     end
 end
 refreshCatalog()
@@ -5169,7 +5194,7 @@ local function liveCandidates()
             table.insert(result, model)
         end
     end
-    for _, model in ipairs(enemies:GetChildren()) do add(model) end
+    for _, model in ipairs(enemies:GetDescendants()) do add(model) end
     for _, model in ipairs(CollectionService:GetTagged("Enemy")) do add(model) end
     return result
 end
@@ -5194,21 +5219,22 @@ local function chooseTarget(fromPosition)
 end
 
 local function mappedSpawns(name)
-    local selected = {}
-    local override = config.MobSpawnOverrides[name]
+    local selected={}
+    local override=config.MobSpawnOverrides[name]
     if override then
-        local part = spawns:FindFirstChild(override)
-        if part and part:IsA("BasePart") then return {part} end
-    end
-    for _, part in ipairs(spawns:GetChildren()) do
-        if part:IsA("BasePart") and spawnPool(part)[name] then
-            table.insert(selected, part)
+        for _,part in ipairs(spawns:GetDescendants()) do
+            if spawnUsable(part) and (part:GetFullName()==override or part.Name==override) then
+                table.insert(selected,part)
+            end
         end
+        if #selected>0 then return selected end
     end
-    table.sort(selected, function(a, b) return a.Name < b.Name end)
+    for _,part in ipairs(spawnParts()) do
+        if spawnUsable(part) and spawnPool(part)[name] then table.insert(selected,part) end
+    end
+    table.sort(selected,function(a,b) return a:GetFullName()<b:GetFullName() end)
     return selected
 end
-
 local function campPoint(root)
     if os.clock() < nextCamp then return end
     local choices = {}
@@ -5239,7 +5265,10 @@ local function campPoint(root)
         return a.Part.Name < b.Part.Name
     end)
     if #choices == 0 then
-        nextCamp = os.clock() + 5
+        if config.MobFarm then
+            warn("[JungleFarm] No available camp for selected mobs. Select mobs in Jungle Mobs; use Print mob routes to inspect streamed spawns.")
+        end
+        nextCamp = os.clock() + 15
         return
     end
     local topPriority = choices[1].Priority
@@ -5466,12 +5495,18 @@ breakerBox:AddDropdown("JungleAIBreakerType", {
 addDropdownSearch(breakerBox, "JungleAIBreakerType", "breaker types")
 Options.JungleAIBreakerType:OnChanged(function(v) config.AIBreakerType = v end)
 
+local function enableJungleCombat()
+    paused=false; runtime.paused=false; nextCamp=0
+    runtime.config.AutoM1=true; config.AutoAttach=true
+    if runtime.sharedToggles and runtime.sharedToggles.HubM1 then runtime.sharedToggles.HubM1:SetValue(true) end
+    if Toggles.JungleAutoAttach then Toggles.JungleAutoAttach:SetValue(true) end
+end
 local initialMobs, initialBosses = sortedNames(MOB_NAMES), sortedNames(BOSS_NAMES)
 mobBox:AddToggle("JungleMobFarm", {Text = "Auto Mob Farm", Default = config.MobFarm})
-Toggles.JungleMobFarm:OnChanged(function(v) config.MobFarm = v; target = nil end)
+Toggles.JungleMobFarm:OnChanged(function(v) config.MobFarm = v; target = nil; if v then enableJungleCombat() end end)
 mobBox:AddDropdown("JungleMobTargets", {
     Text = "Mobs to farm", Values = initialMobs,
-    Default = initialMobs, Multi = true, AllowNull = true,
+    Default = config.SelectedMobs, Multi = true, AllowNull = true,
 })
 addDropdownSearch(mobBox, "JungleMobTargets", "mobs")
 local refreshingMobs = false
@@ -5499,8 +5534,8 @@ mobSettings:AddSlider("JungleMobPriority", {
     Text = "Priority", Default = 1, Min = 1, Max = 10, Rounding = 0,
 })
 local spawnChoices = {"Auto"}
-for _, part in ipairs(spawns:GetChildren()) do
-    if part:IsA("BasePart") then table.insert(spawnChoices, part.Name) end
+for _, part in ipairs(spawnParts()) do
+    if part:IsA("BasePart") then table.insert(spawnChoices, part:GetFullName()) end
 end
 table.sort(spawnChoices, function(a, b)
     if a == "Auto" then return true end
@@ -5539,10 +5574,10 @@ end)
 refreshMobSettings()
 
 bossBox:AddToggle("JungleBossFarm", {Text = "Auto Boss Farm", Default = config.BossFarm})
-Toggles.JungleBossFarm:OnChanged(function(v) config.BossFarm = v; target = nil end)
+Toggles.JungleBossFarm:OnChanged(function(v) config.BossFarm = v; target = nil; if v then enableJungleCombat() end end)
 bossBox:AddDropdown("JungleBossTargets", {
     Text = "Bosses to farm", Values = initialBosses,
-    Default = initialBosses, Multi = true, AllowNull = true,
+    Default = config.SelectedBosses, Multi = true, AllowNull = true,
 })
 addDropdownSearch(bossBox, "JungleBossTargets", "bosses")
 local refreshingBosses = false
@@ -5562,12 +5597,12 @@ end)
 bossBox:AddLabel("Live selected bosses outrank every regular mob.", true)
 
 specialBox:AddToggle("JungleApexFarm", {Text = "Apex Farm", Default = config.ApexFarm})
-Toggles.JungleApexFarm:OnChanged(function(v) config.ApexFarm = v; target = nil end)
+Toggles.JungleApexFarm:OnChanged(function(v) config.ApexFarm = v; target = nil; if v then enableJungleCombat() end end)
 specialBox:AddToggle("JunglePrimeApexFarm", {
     Text = "Prime Apex Farm", Default = config.PrimeApexFarm,
 })
 Toggles.JunglePrimeApexFarm:OnChanged(function(v)
-    config.PrimeApexFarm = v; target = nil
+    config.PrimeApexFarm = v; target = nil; if v then enableJungleCombat() end
 end)
 specialBox:AddLabel("Prime Apex > Apex > selected bosses > mobs.", true)
 
@@ -5921,6 +5956,14 @@ end)
 
 local mobSignature, bossSignature, skillSignature, teleportSignature = "", "", "", ""
 local function refreshDropdowns()
+    local choices={"Auto"}
+    for _,part in ipairs(spawnParts()) do table.insert(choices,part:GetFullName()) end
+    table.sort(choices,function(a,b) if a==b then return false end; if a=="Auto" then return true end; if b=="Auto" then return false end; return a<b end)
+    if table.concat(choices,"\n")~=table.concat(spawnChoices,"\n") then
+        spawnChoices=choices
+        Options.JungleMobSpawn:SetValues(choices)
+        refreshMobSettings()
+    end
     refreshCatalog()
     local mobNames = sortedNames(MOB_NAMES)
     local signature = table.concat(mobNames, "\n")
@@ -5983,6 +6026,15 @@ local function refreshDropdowns()
         refreshingSkills = false
     end
 end
+mobBox:AddButton("Refresh mobs and routes",function() refreshDropdowns() end)
+mobBox:AddButton("Print mob routes",function()
+    refreshCatalog()
+    for _,name in ipairs(sortedNames(MOB_NAMES)) do
+        local routes=mappedSpawns(name)
+        print("[JungleRoute] "..name.." | selected="..tostring(config.SelectedMobs[name]==true).." | camps="..#routes)
+        for _,part in ipairs(routes) do print("  "..part:GetFullName()) end
+    end
+end)
 refreshDropdowns()
 refreshNPCs()
 task.spawn(function()
