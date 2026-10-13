@@ -4,6 +4,38 @@ if type(env.StopCloverHub)=="function" then pcall(env.StopCloverHub) end
 local player=game:GetService("Players").LocalPlayer
 local runtime={controls={},saveSerial=0}
 env.CloverRuntime=runtime
+-- A visible boot card is rendered before profile setup, then removed after its entrance.
+local boot=Instance.new("ScreenGui")
+boot.Name="CloverBoot"; boot.ResetOnSpawn=false; boot.DisplayOrder=100
+boot.Parent=player:WaitForChild("PlayerGui")
+local card=Instance.new("CanvasGroup")
+card.AnchorPoint=Vector2.new(.5,.5); card.Position=UDim2.fromScale(.5,.5)
+card.Size=UDim2.fromOffset(330,112); card.BackgroundColor3=Color3.fromRGB(17,20,17)
+card.BorderSizePixel=0; card.GroupTransparency=1; card.Parent=boot
+local corner=Instance.new("UICorner"); corner.CornerRadius=UDim.new(0,16); corner.Parent=card
+local bootScale=Instance.new("UIScale"); bootScale.Scale=.7; bootScale.Parent=card
+local title=Instance.new("TextLabel"); title.BackgroundTransparency=1; title.Size=UDim2.new(1,0,0,45)
+title.Position=UDim2.fromOffset(0,18); title.Font=Enum.Font.GothamBold; title.TextSize=25
+title.TextColor3=Color3.fromRGB(190,219,65); title.Text="CLOVER"; title.Parent=card
+local detail=Instance.new("TextLabel"); detail.BackgroundTransparency=1; detail.Size=UDim2.new(1,0,0,25)
+detail.Position=UDim2.fromOffset(0,65); detail.Font=Enum.Font.Gotham; detail.TextSize=12
+detail.TextColor3=Color3.fromRGB(190,196,182); detail.Text="Preparing your controls…"; detail.Parent=card
+game:GetService("RunService").RenderStepped:Wait()
+local bootTween=game:GetService("TweenService")
+bootTween:Create(bootScale,TweenInfo.new(.65,Enum.EasingStyle.Back,Enum.EasingDirection.Out),{Scale=1}):Play()
+bootTween:Create(card,TweenInfo.new(.4),{GroupTransparency=0}):Play()
+runtime.closeBoot=function()
+    if not boot.Parent or runtime.bootClosing then return end
+    runtime.bootClosing=true
+    detail.Text="Ready"
+    task.delay(.65,function()
+        if not boot.Parent then return end
+        local fade=bootTween:Create(card,TweenInfo.new(.3),{GroupTransparency=1})
+        fade.Completed:Once(function() boot:Destroy() end); fade:Play()
+    end)
+end
+task.delay(20,runtime.closeBoot)
+
 local function createCloverLibrary()
     local UIS = game:GetService("UserInputService")
     local Tween = game:GetService("TweenService")
@@ -376,6 +408,14 @@ local function createCloverLibrary()
             if self.HUDEntrance then self.HUDEntrance() end
         end
         runtime.configureUI(lib,result,toggles,options)
+        task.defer(function()
+            task.wait(.3)
+            if lib.Unloaded or runtime.library~=lib then return end
+            runtime.starting=false
+            lib:PlayEntrance()
+            if runtime.closeBoot then runtime.closeBoot() end
+            print("[CloverHub] Startup animation v3")
+        end)
         return result
     end
     function lib:CreateHUD(settings)
@@ -574,7 +614,7 @@ function runtime.allowCombat()
     return not runtime.resting
 end
 function runtime.allowAttack(character)
-    if not runtime.config.AutoM1 or not runtime.allowCombat() then return false end
+    if runtime.kaldrisDodging or not runtime.config.AutoM1 or not runtime.allowCombat() then return false end
     local status=character and character:FindFirstChild("Status")
     local casting=status and status:FindFirstChild("Casting")
     return not (casting and casting.Value)
@@ -700,6 +740,7 @@ function runtime.switch(profile)
                 game:GetService("RunService").RenderStepped:Wait()
                 if serial==runtime.switchSerial and runtime.library and not runtime.library.Unloaded then
                     runtime.library:PlayEntrance()
+                    if runtime.closeBoot then runtime.closeBoot() end
                     print("[CloverHub] Startup animation v2")
                 end
             end)
@@ -708,6 +749,7 @@ function runtime.switch(profile)
 end
 function runtime.configureUI(library,window,toggles,options)
     runtime.library=library
+    runtime.sharedToggles=toggles
     local cfg=runtime.config
     local tab=window:AddTab("Hub")
     local areas=tab:AddLeftGroupbox("Area profile")
@@ -772,6 +814,7 @@ function runtime.configureUI(library,window,toggles,options)
         local ok,err=pcall(function() writefile("CloverHub-settings.json",game:GetService("HttpService"):JSONEncode(data)) end)
         if ok then print("[CloverHub] Saved settings") else warn(err) end
     end)
+    settings:AddButton("Replay startup animation",function() library:PlayEntrance() end)
     settings:AddButton("Print diagnostics",function()
         local data=runtime.telemetry and runtime.telemetry() or {}
         print("[CloverHub] profile="..tostring(runtime.profile).." detected="..runtime.detect().." target="..tostring(data.Target)
@@ -1073,6 +1116,7 @@ for _, entry in ipairs(SealCatalog.Seals) do
     end
 end
 table.sort(MOB_NAME_SEED)
+if not BOSS_NAMES.Kaldris then BOSS_NAMES.Kaldris=true; table.insert(BOSS_NAME_SEED,"Kaldris") end
 table.sort(BOSS_NAME_SEED)
 
 local MOB_SPAWN_NAMES = {
@@ -1411,6 +1455,50 @@ do
     info:AddLabel("Resets once per character at or below the selected HP percentage. Monitoring resumes after respawn.", true)
     info:AddLabel("Resetting in combat may apply the game's death penalties.", true)
 end
+local kaldrisTab=Window:AddTab("Kaldris")
+local kaldrisBox=kaldrisTab:AddLeftGroupbox("Ashen Crucible")
+local kaldrisInfo=kaldrisTab:AddRightGroupbox("Cinder Sigils")
+kaldrisInfo:AddLabel("Farm starts OFF. Enable boss combat only when you are inside the Crucible. No Mage Apprentice or Vampire farm is enabled by this tab.",true)
+kaldrisInfo:AddLabel("Cinder Sigils: your item description lists fire mages and charred netherwings. Summoning consumes a sigil at the Ember Altar.",true)
+kaldrisBox:AddToggle("KaldrisCombat",{Text="Fight spawned Kaldris only",Default=false})
+Toggles.KaldrisCombat:OnChanged(function(enabled)
+    if Toggles.VampireFarmEnabled then Toggles.VampireFarmEnabled:SetValue(false) end
+    if Toggles.MobFarmEnabled then Toggles.MobFarmEnabled:SetValue(false) end
+    for _,id in ipairs({"ApexFarmEnabled","PrimeApexFarmEnabled","GolemFarmEnabled","AutoChestLootEnabled"}) do
+        if Toggles[id] then Toggles[id]:SetValue(false) end
+    end
+    Options.BossTargets:SetValue(enabled and {Kaldris=true} or {})
+    Toggles.BossFarmEnabled:SetValue(enabled)
+    if runtime.library then
+        local shared=runtime.sharedToggles
+        if shared and shared.HubM1 then shared.HubM1:SetValue(enabled) end
+    end
+    runtime.config.AutoM1=enabled
+    env.VampireFarmConfig.AutoAttachEnabled=enabled
+    if Toggles.AutoAttachEnabled then Toggles.AutoAttachEnabled:SetValue(enabled) end
+end)
+kaldrisBox:AddButton("Interact with nearby Ember Altar",function()
+    local map=workspace:FindFirstChild("Map")
+    local altar=map and map:FindFirstChild("EmberAltar")
+    local part=altar and altar:FindFirstChild("InteractionPart")
+    local prompt=part and part:FindFirstChild("Interaction")
+    local root=runtime.getRoot(player.Character)
+    if not prompt or not prompt:IsA("ProximityPrompt") or not part:IsA("BasePart") or not root then
+        warn("[Kaldris] Ember Altar not streamed nearby"); return
+    end
+    if not prompt.Enabled or (root.Position-part.Position).Magnitude>prompt.MaxActivationDistance then
+        warn("[Kaldris] Walk within the altar's interaction range first"); return
+    end
+    if type(fireproximityprompt)~="function" then warn("[Kaldris] Prompt API unavailable"); return end
+    local ok,err=pcall(fireproximityprompt,prompt)
+    if not ok then warn("[Kaldris] Altar interaction failed: "..tostring(err)) end
+end)
+kaldrisBox:AddToggle("KaldrisAirDodge",{Text="Aerial dodge on visible casting signal",Default=false})
+Toggles.KaldrisAirDodge:OnChanged(function(value) env.VampireFarmConfig.KaldrisAirDodgeEnabled=value end)
+kaldrisBox:AddSlider("KaldrisDodgeHeight",{Text="Dodge height (studs)",Default=30,Min=10,Max=70,Rounding=0})
+Options.KaldrisDodgeHeight:OnChanged(function(value) env.VampireFarmConfig.KaldrisDodgeHeight=value end)
+kaldrisInfo:AddLabel("Aerial dodge requires Kaldris to expose a Casting BoolValue or boolean Casting attribute. It cannot predict unreported attacks or guarantee immunity.",true)
+kaldrisInfo:AddLabel("The altar button only interacts while nearby. It does not teleport you or automatically spend repeated sigils. Boss phase handling still needs live testing.",true)
 local uiTab = Window:AddTab("Settings")
 local combatBox = farmTab:AddLeftGroupbox("Combat")
 local statBox = farmTab:AddRightGroupbox("Stats")
@@ -2008,9 +2096,9 @@ task.spawn(function()
 end)
 
 combatBox:AddToggle("VampireInstantKill", {
-    Text = "Instant kill attempt",
+    Text = "Finish with normal combat",
     Default = env.VampireFarmConfig.InstantKillEnabled,
-    Tooltip = "Attempt the local HP kill at or below the selected mob HP percentage.",
+    Tooltip = "Local health writes were removed. M1 and skills continue until the target is no longer alive.",
 })
 Toggles.VampireInstantKill:OnChanged(function(value)
     env.VampireFarmConfig.InstantKillEnabled = value
@@ -3141,31 +3229,11 @@ combatBox:AddButton("Print instant-kill status", function()
     golem.reportKillGate(target, reason, true)
 end)
 local function tryOwnedMobLocalKill(model)
-    local reason, humanoid = golem.inspectKill(model)
-    if not humanoid then
-        if env.VampireFarmConfig.InstantKillEnabled then golem.reportKillGate(model, reason, false) end
-        return false
-    end
-    local ok, err = pcall(function() humanoid.Health = 0 end)
-    if not ok then
-        golem.reportKillGate(model, "health write failed: " .. tostring(err), false)
-        return false
-    end
-    attemptedMobs[model] = true
-    golem.reportKillGate(model, reason .. "; client health now " .. tostring(humanoid.Health), true)
-    task.delay(0.75, function()
-        if not running or not humanoid.Parent then return end
-        if humanoid.Health > 0 then
-            warn("[CloverKill] Health is positive after the local attempt: " .. model.Name
-                .. "; continuing normal combat.")
-        else
-            print("[CloverKill] Client health remains zero for " .. model.Name
-                .. "; this does not confirm a server kill or rewards.")
-        end
-    end)
-    return true
+    -- Client-side health writes cannot verify server death and break target tracking.
+    -- Keep the target and let the existing M1/skill loop finish it normally.
+    return false
 end
-
+local kaldrisDodgeUntil=0
 local warnedDisabledSpawn = false
 local equipCharacter, lastEquipAttempt, equipAttempts = nil, -math.huge, 0
 
@@ -3184,6 +3252,22 @@ attachConnection = RunService.PostSimulation:Connect(function()
     end
 
     local targetCFrame = enemyRoot.CFrame
+    runtime.kaldrisDodging=false
+    if target.Name=="Kaldris" and env.VampireFarmConfig.KaldrisAirDodgeEnabled then
+        local status=target:FindFirstChild("Status")
+        local casting=status and status:FindFirstChild("Casting",true)
+        local active=(casting and casting:IsA("BoolValue") and casting.Value)
+            or target:GetAttribute("Casting")==true
+        if active then kaldrisDodgeUntil=os.clock()+.75 end
+        if os.clock()<kaldrisDodgeUntil then
+            runtime.kaldrisDodging=true
+            local height=math.clamp(tonumber(env.VampireFarmConfig.KaldrisDodgeHeight) or 30,10,70)
+            local destination=enemyRoot.Position+Vector3.new(0,height,8)
+            myRoot.CFrame=CFrame.lookAt(destination,enemyRoot.Position)
+            myRoot.AssemblyLinearVelocity=Vector3.zero
+            return
+        end
+    end
     if env.VampireFarmConfig.IgnoreRotation then
         targetCFrame = CFrame.new(targetCFrame.Position)
     end
@@ -4118,24 +4202,8 @@ local function killThreshold(kind)
 end
 
 local function tryLocalKill(model, kind)
-    if not config.InstantKill or not enemyModel(model) then return false end
-    if type(isnetworkowner) ~= "function" then return false end
-    if os.clock() - (lastKillAttempt[model] or -math.huge) < 2 then return false end
-    local humanoid, root = model:FindFirstChildOfClass("Humanoid"), rootOf(model)
-    if humanoid.MaxHealth <= 0 then return false end
-    local hpPercent = humanoid.Health / humanoid.MaxHealth * 100
-    if hpPercent > killThreshold(kind) then return false end
-    local ok, owned = pcall(isnetworkowner, root)
-    if not (ok and owned) then return false end
-    lastKillAttempt[model] = os.clock()
-    local changed = pcall(function() humanoid.Health = 0 end)
-    if changed then
-        print(("[JungleFarm] %s at %.1f%% HP: local kill attempt")
-            :format(model.Name, hpPercent))
-    end
-    return changed
+    return false -- Normal combat remains active until live target tracking reports death.
 end
-
 local function availableSkills()
     local result = {}
     local gui = player:FindFirstChildOfClass("PlayerGui")
@@ -4440,7 +4508,7 @@ end)
 specialBox:AddLabel("Prime Apex > Apex > selected bosses > mobs.", true)
 
 attackBox:AddToggle("JungleInstantKill", {
-    Text = "Local kill attempt", Default = config.InstantKill,
+    Text = "Finish with normal combat", Default = config.InstantKill,
 })
 Toggles.JungleInstantKill:OnChanged(function(v) config.InstantKill = v end)
 local function addThreshold(groupbox, id, label, field)
@@ -5161,28 +5229,8 @@ local function useSkill(character)
     return false
 end
 local function tryLocalKill(model, force)
-    if not (config.InstantKill or force) then return false, "disabled" end
-    if not alive(model) then return false, "no live target" end
-    local humanoid, root = model:FindFirstChildOfClass("Humanoid"), rootOf(model)
-    local threshold = force and 100
-        or math.clamp(tonumber(config.KillThreshold) or 5, 0, 100)
-    if humanoid.MaxHealth <= 0 or humanoid.Health / humanoid.MaxHealth * 100 > threshold then
-        return false, "above HP threshold"
-    end
-    if os.clock() - (lastKillAttempt[model] or -math.huge) < 2 then
-        return false, "attempt cooldown"
-    end
-    if type(isnetworkowner) ~= "function" then return false, "isnetworkowner unavailable" end
-    local ok, owned = pcall(isnetworkowner, root)
-    if not (ok and owned) then return false, "server owns target" end
-    lastKillAttempt[model] = os.clock()
-    local changed, err = pcall(function() humanoid.Health = 0 end)
-    if not changed then return false, tostring(err) end
-    print("[ArcaneDungeon] Local kill attempt: " .. model.Name
-        .. " (watch for server Dead/reward confirmation)")
-    return true, "local attempt sent"
+    return false, "Use M1 and skills; local health writes are not server-confirmed kills"
 end
-
 local function candidates()
     local found, seen = {}, {}
     local function add(model)
@@ -5352,7 +5400,7 @@ end)
 farmBox:AddLabel("Aetherion has priority; normal enemies resume afterward.", true)
 farmBox:AddLabel("The boss is untargetable during attack phases.", true)
 farmBox:AddToggle("DungeonInstantKill", {
-    Text = "Instant kill at HP threshold", Default = config.InstantKill,
+    Text = "Finish with normal combat", Default = config.InstantKill,
 })
 Toggles.DungeonInstantKill:OnChanged(function(v) config.InstantKill = v end)
 farmBox:AddSlider("DungeonKillThreshold", {
@@ -5671,6 +5719,23 @@ if type(readfile)=="function" and type(isfile)=="function" then
     end
 end
 if not game:IsLoaded() then game.Loaded:Wait() end
+-- Explicit user preference: every execution starts idle, regardless of saved farm toggles.
+runtime.config.AutoM1=false; runtime.config.AutoCollect=false; runtime.config.AutoQuestPrompt=false
+runtime.config.AutoReset=false; runtime.config.AutoStaminaReset=false
+for _,name in ipairs({"VampireFarmConfig","CloverJungleConfig","CloverArcaneConfig"}) do
+    local cfg=type(env[name])=="table" and env[name] or {}; env[name]=cfg
+    for _,key in ipairs({"Enabled","BossFarmEnabled","ApexFarmEnabled","PrimeApexFarmEnabled","GolemFarmEnabled",
+        "AutoChestLootEnabled","AutoAttachEnabled","AutoResetEnabled","MobFarm","BossFarm","ApexFarm","PrimeApexFarm",
+        "KaldrisAirDodgeEnabled","AutoStartBoss","AutoAttach","AutoSkill","AutoSkillEnabled","AIBreakerEnabled","AIBreaker"}) do cfg[key]=false end
+    if name=="VampireFarmConfig" then cfg.FarmMode="Off" end
+end
+for key in pairs(runtime.controls) do
+    if key:find("Farm",1,true) or key:find("Auto",1,true) or key:find("HubM1",1,true)
+        or key:find("HubCollect",1,true) or key:find("HubReset",1,true) or key:find("HubStaminaReset",1,true)
+        or key:find("DungeonEnabled",1,true) or key:find("ExplorerEnabled",1,true) or key:find("KaldrisCombat",1,true) or key:find("KaldrisAirDodge",1,true) then
+        runtime.controls[key]=nil
+    end
+end
 local detected=runtime.detect()
 print("[CloverHub] Detected profile: "..detected.." | PlaceId "..game.PlaceId)
 runtime.switch(detected)
