@@ -1,8 +1,9 @@
--- Clover Hub: area profiles, shared HUD, ESP, collection and diagnostics.
+-- Clover Hub: complete-source merge (ore, Kraken, party, mana); farms idle on startup.
 local env=getgenv()
 if type(env.StopCloverHub)=="function" then pcall(env.StopCloverHub) end
 local player=game:GetService("Players").LocalPlayer
 local runtime={controls={},saveSerial=0}
+runtime.settingsPath="CloverHub-settings-"..tostring(player.UserId)..".json"
 env.CloverRuntime=runtime
 -- A visible boot card is rendered before profile setup, then removed after its entrance.
 local boot=Instance.new("ScreenGui")
@@ -578,14 +579,19 @@ function runtime.detect()
 end
 function runtime.mana()
     local character=player.Character
-    local status=character and character:FindFirstChild("Status")
+    if not character then return nil end
+    local function valid(n) return type(n)=="number" and n==n and n~=math.huge and n~=-math.huge end
+    local current,maximum=character:GetAttribute("Mana"),character:GetAttribute("MaxMana")
+    if valid(current) and valid(maximum) and maximum>0 then return math.clamp(current/maximum*100,0,100) end
+    local status=character:FindFirstChild("Status")
     local value=status and status:FindFirstChild("Mana",true)
     if not value or not (value:IsA("NumberValue") or value:IsA("IntValue")) then return nil end
-    local max=tonumber(value:GetAttribute("Max")) or tonumber(value:GetAttribute("MaxValue"))
+    current=value.Value
+    maximum=tonumber(value:GetAttribute("Max")) or tonumber(value:GetAttribute("MaxValue"))
     local sibling=value.Parent and value.Parent:FindFirstChild("MaxMana")
-    if not max and sibling and (sibling:IsA("NumberValue") or sibling:IsA("IntValue")) then max=sibling.Value end
-    if not max or max<=0 then return nil end
-    return math.clamp(value.Value/max*100,0,100)
+    if not maximum and sibling and (sibling:IsA("NumberValue") or sibling:IsA("IntValue")) then maximum=sibling.Value end
+    if not valid(current) or not valid(maximum) or maximum<=0 then return nil end
+    return math.clamp(current/maximum*100,0,100)
 end
 function runtime.stamina()
     local character=player.Character
@@ -719,7 +725,7 @@ function runtime.switch(profile)
     local serial=runtime.switchSerial
     runtime.stopProfiles()
     env.VampireFarmLaunchToken={}; env.JungleFarmLaunchToken={}; env.ArcaneDungeonLaunchToken={}
-    runtime.profile=profile; runtime.paused=false; runtime.resting=false; runtime.telemetry=nil
+    runtime.profile=profile; runtime.paused=false; runtime.resting=false; runtime.kaldrisDodging=false; runtime.telemetry=nil
     runtime.config.Profile=profile
     runtime.starting=true
     task.spawn(function()
@@ -782,7 +788,7 @@ function runtime.configureUI(library,window,toggles,options)
     toggle(health,"HubStaminaReset","Auto reset at low stamina","AutoStaminaReset")
     slider(health,"HubResetStamina","Reset stamina (%)","ResetStamina",1,50)
     local staminaLabel=survivalInfo:AddLabel("Stamina: waiting for current / maximum values",true)
-    survivalInfo:AddLabel("Stamina reset starts enabled at 10%. Waits 15 seconds after spawning and 1 second below the threshold.",true)
+    survivalInfo:AddLabel("Reset starts off. When enabled, waits 15 seconds after spawning and 1 second below the selected threshold.",true)
     local visuals=window:AddTab("Visuals"):AddLeftGroupbox("ESP")
     toggle(visuals,"HubESPMobs","Mob / boss ESP","ESPMobs")
     toggle(visuals,"HubESPPlayers","Player ESP","ESPPlayers")
@@ -810,8 +816,8 @@ function runtime.configureUI(library,window,toggles,options)
     toggle(settings,"HubHUD","Show live HUD","HUDEnabled")
     settings:AddButton("Save settings",function()
         if type(writefile)~="function" then warn("[CloverHub] writefile unavailable"); return end
-        local data={Hub=cfg,World=env.VampireFarmConfig,Jungle=env.CloverJungleConfig,Arcane=env.CloverArcaneConfig,Controls=runtime.controls}
-        local ok,err=pcall(function() writefile("CloverHub-settings.json",game:GetService("HttpService"):JSONEncode(data)) end)
+        local data={Version=2,UserId=player.UserId,Hub=cfg,World=env.VampireFarmConfig,Jungle=env.CloverJungleConfig,Arcane=env.CloverArcaneConfig,Controls=runtime.controls}
+        local ok,err=pcall(function() writefile(runtime.settingsPath,game:GetService("HttpService"):JSONEncode(data)) end)
         if ok then print("[CloverHub] Saved settings") else warn(err) end
     end)
     settings:AddButton("Replay startup animation",function() library:PlayEntrance() end)
@@ -1004,8 +1010,8 @@ function runtime.saveSettings()
         if not runtime.saveUnavailable then warn("[CloverHub] Automatic saving requires executor writefile support"); runtime.saveUnavailable=true end
         return false
     end
-    local data={Hub=runtime.config,World=env.VampireFarmConfig,Jungle=env.CloverJungleConfig,Arcane=env.CloverArcaneConfig,Controls=runtime.controls}
-    local ok,err=pcall(function() writefile("CloverHub-settings.json",game:GetService("HttpService"):JSONEncode(data)) end)
+    local data={Version=2,UserId=player.UserId,Hub=runtime.config,World=env.VampireFarmConfig,Jungle=env.CloverJungleConfig,Arcane=env.CloverArcaneConfig,Controls=runtime.controls}
+    local ok,err=pcall(function() writefile(runtime.settingsPath,game:GetService("HttpService"):JSONEncode(data)) end)
     if not ok then warn("[CloverHub] Settings save failed: "..tostring(err)) end
     return ok
 end
@@ -1018,7 +1024,6 @@ function runtime.requestSave()
 end
 runtime.newUI=function() return createCloverLibrary() end
 runtime.profiles["First Kingdom"]=function()
-print("[CloverStartup] Starting camera, skill, and health update")
 local env = getgenv()
 local savedConfig = type(env.VampireFarmConfig) == "table"
     and env.VampireFarmConfig or {}
@@ -1050,11 +1055,11 @@ if env.VampireFarmLaunchToken ~= launchToken then return end
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
--- Input handling belongs to the UI adapter.
+-- Input handling belongs to the shared UI.
 local player = Players.LocalPlayer
 local entities = workspace:WaitForChild("Entities",15); assert(entities,"Entities not streamed")
 local enemies = entities:WaitForChild("Enemies",15); assert(enemies,"Enemies not streamed")
-local spawns = entities:WaitForChild("Spawns",15); assert(spawns,"Spawns not streamed; choose Explorer or Arcane Dungeon")
+local spawns = entities:WaitForChild("Spawns",15); assert(spawns,"Spawns not streamed; select another area in Hub")
 local spawn = spawns:FindFirstChild("VampireSoldierSpawn")
 local action = game:GetService("ReplicatedStorage")
     :WaitForChild("ReplicatedPackage")
@@ -1084,8 +1089,25 @@ local golem = {
     LastWarningAt = -math.huge,
     Candidates = setmetatable({}, {__mode = "k"}),
 }
+local kraken = {
+    Name = "Desert Kraken",
+    Candidates = setmetatable({}, {__mode = "k"}),
+    SafeUntil = 0,
+    LastAnchor = nil,
+    Waiting = false,
+}
 local SIMULATION_RADIUS = 3000
 local RADIUS_INTERVAL = 0.05
+local oreFarm = {
+    Folders = {"GrasslandsOreCorrect", "TundraOre", "Desert"},
+    Names = {"Stone", "Copper", "Iron", "Manastone", "Dragonite"},
+    NameSet = {},
+    Current = nil, Phase = nil, ReadyAt = 0, MineUntil = 0,
+    NextNodeAt = 0, LastWarningAt = -math.huge,
+    Attempted = setmetatable({}, {__mode = "k"}),
+}
+for _, name in ipairs(oreFarm.Names) do oreFarm.NameSet[name] = true end
+table.sort(oreFarm.Names)
 
 local PRIORITY = {
     ["Corrupted Elder Vampire"] = 4,
@@ -1104,8 +1126,9 @@ local BOSS_NAME_SEED = {}
 local BOSS_NAMES = {}
 local APEX_NAMES = {Apex = true, ["Prime Apex"] = true}
 for _, entry in ipairs(SealCatalog.Seals) do
-    if APEX_NAMES[entry.name] or entry.name == golem.Name then
-        -- Apex targets have their own farm section in the Boss tab.
+    if APEX_NAMES[entry.name] or entry.name == golem.Name
+        or entry.name == kraken.Name then
+        -- Apex, golem, and Kraken have separate farm controls.
     elseif entry.boss == true then
         if not BOSS_NAMES[entry.name] then
             BOSS_NAMES[entry.name] = true
@@ -1116,8 +1139,11 @@ for _, entry in ipairs(SealCatalog.Seals) do
         table.insert(MOB_NAME_SEED, entry.name)
     end
 end
+if not BOSS_NAMES.Kaldris then
+    BOSS_NAMES.Kaldris = true
+    table.insert(BOSS_NAME_SEED, "Kaldris")
+end
 table.sort(MOB_NAME_SEED)
-if not BOSS_NAMES.Kaldris then BOSS_NAMES.Kaldris=true; table.insert(BOSS_NAME_SEED,"Kaldris") end
 table.sort(BOSS_NAME_SEED)
 
 local MOB_SPAWN_NAMES = {
@@ -1130,6 +1156,12 @@ local MOB_SPAWN_NAMES = {
     ["Wolf"] = "WolfSpawn",
 }
 
+for name in pairs(MOB_SPAWN_NAMES) do
+    if not MOB_NAMES[name] and not BOSS_NAMES[name] then
+        MOB_NAMES[name]=true; table.insert(MOB_NAME_SEED,name)
+    end
+end
+table.sort(MOB_NAME_SEED)
 if type(env.VampireFarmConfig) ~= "table" then
     env.VampireFarmConfig = {}
 end
@@ -1153,6 +1185,9 @@ if type(env.VampireFarmConfig.PreventVoiding) ~= "boolean" then
 end
 if type(env.VampireFarmConfig.AutoAttachEnabled) ~= "boolean" then
     env.VampireFarmConfig.AutoAttachEnabled = true
+end
+if type(env.VampireFarmConfig.OwnedMobPinEnabled) ~= "boolean" then
+    env.VampireFarmConfig.OwnedMobPinEnabled = true
 end
 if type(env.VampireFarmConfig.AIBreakerEnabled) ~= "boolean" then
     env.VampireFarmConfig.AIBreakerEnabled = false
@@ -1188,9 +1223,39 @@ end
 if type(env.VampireFarmConfig.AutoSkillEnabled) ~= "boolean" then
     env.VampireFarmConfig.AutoSkillEnabled = false
 end
+if type(env.VampireFarmConfig.AutoEquipWeaponEnabled) ~= "boolean" then
+    env.VampireFarmConfig.AutoEquipWeaponEnabled = true
+end
+if type(env.VampireFarmConfig.AutoSkillManaGateEnabled) ~= "boolean" then
+    env.VampireFarmConfig.AutoSkillManaGateEnabled = true
+end
+if type(env.VampireFarmConfig.AutoSkillManaThresholdPercent) ~= "number"
+    or env.VampireFarmConfig.AutoSkillManaThresholdPercent ~= env.VampireFarmConfig.AutoSkillManaThresholdPercent
+    or env.VampireFarmConfig.AutoSkillManaThresholdPercent == math.huge
+    or env.VampireFarmConfig.AutoSkillManaThresholdPercent == -math.huge then
+    env.VampireFarmConfig.AutoSkillManaThresholdPercent = 30
+end
+env.VampireFarmConfig.AutoSkillManaThresholdPercent = math.clamp(
+    env.VampireFarmConfig.AutoSkillManaThresholdPercent, 0, 100)
+if type(env.VampireFarmConfig.AutoSkillResetAtLowMana) ~= "boolean" then
+    env.VampireFarmConfig.AutoSkillResetAtLowMana = true
+end
+if type(env.VampireFarmConfig.AutoSkillResetManaThreshold) ~= "number"
+    or env.VampireFarmConfig.AutoSkillResetManaThreshold ~= env.VampireFarmConfig.AutoSkillResetManaThreshold
+    or env.VampireFarmConfig.AutoSkillResetManaThreshold == math.huge
+    or env.VampireFarmConfig.AutoSkillResetManaThreshold == -math.huge then
+    env.VampireFarmConfig.AutoSkillResetManaThreshold = 0
+end
+env.VampireFarmConfig.AutoSkillResetManaThreshold = math.max(0,
+    math.floor(env.VampireFarmConfig.AutoSkillResetManaThreshold + 0.5))
+env.VampireFarmConfig.AutoSkillResetManaThresholdPercent = nil
+if type(env.VampireFarmConfig.SilentAimEnabled) ~= "boolean" then
+    env.VampireFarmConfig.SilentAimEnabled = false
+end
 if type(env.VampireFarmConfig.SelectedSkills) ~= "table" then
     env.VampireFarmConfig.SelectedSkills = {}
 end
+env.VampireFarmConfig.SelectedSkills["Grimoire:World Tree Magic: Heartwood Lance"] = nil
 if type(env.VampireFarmConfig.BossFarmEnabled) ~= "boolean" then
     env.VampireFarmConfig.BossFarmEnabled = true
 end
@@ -1202,6 +1267,28 @@ if type(env.VampireFarmConfig.PrimeApexFarmEnabled) ~= "boolean" then
 end
 if type(env.VampireFarmConfig.GolemFarmEnabled) ~= "boolean" then
     env.VampireFarmConfig.GolemFarmEnabled = true
+end
+if type(env.VampireFarmConfig.KrakenFarmEnabled) ~= "boolean" then
+    env.VampireFarmConfig.KrakenFarmEnabled = true
+end
+if type(env.VampireFarmConfig.KrakenDiveProtectionEnabled) ~= "boolean" then
+    env.VampireFarmConfig.KrakenDiveProtectionEnabled = true
+end
+do
+local function boundedKrakenSetting(value, default, minimum, maximum)
+    local number = tonumber(value)
+    if not number or number ~= number or number == math.huge
+        or number == -math.huge then
+        number = default
+    end
+    return math.clamp(number, minimum, maximum)
+end
+env.VampireFarmConfig.KrakenHoverDistance = boundedKrakenSetting(
+    env.VampireFarmConfig.KrakenHoverDistance, 320, 80, 800)
+env.VampireFarmConfig.KrakenHoverHeight = boundedKrakenSetting(
+    env.VampireFarmConfig.KrakenHoverHeight, 400, 100, 1000)
+env.VampireFarmConfig.KrakenSafetySeconds = boundedKrakenSetting(
+    env.VampireFarmConfig.KrakenSafetySeconds, 3, 1, 8)
 end
 if type(env.VampireFarmConfig.SelectedBosses) ~= "table" then
     env.VampireFarmConfig.SelectedBosses = {}
@@ -1228,8 +1315,32 @@ end
 if type(env.VampireFarmConfig.MobSpawnOverrides) ~= "table" then
     env.VampireFarmConfig.MobSpawnOverrides = {}
 end
+if type(env.VampireFarmConfig.SelectedOres) ~= "table" then
+    env.VampireFarmConfig.SelectedOres = {}
+    for _, name in ipairs(oreFarm.Names) do
+        env.VampireFarmConfig.SelectedOres[name] = true
+    end
+end
+for name in pairs(env.VampireFarmConfig.SelectedOres) do
+    if not oreFarm.NameSet[name] then
+        env.VampireFarmConfig.SelectedOres[name] = nil
+    end
+end
+function oreFarm.boundedTime(value, default, maximum)
+    local number = tonumber(value)
+    if not number or number ~= number or number == math.huge
+        or number == -math.huge then
+        number = default
+    end
+    return math.clamp(math.floor(number * 10 + 0.5) / 10, 0, maximum)
+end
+env.VampireFarmConfig.OreMineSeconds = oreFarm.boundedTime(
+    env.VampireFarmConfig.OreMineSeconds, 2, 60)
+env.VampireFarmConfig.OreDelaySeconds = oreFarm.boundedTime(
+    env.VampireFarmConfig.OreDelaySeconds, 1, 5)
 if env.VampireFarmConfig.FarmMode ~= "Vampire"
     and env.VampireFarmConfig.FarmMode ~= "Mob"
+    and env.VampireFarmConfig.FarmMode ~= "Ore"
     and env.VampireFarmConfig.FarmMode ~= "Off" then
     env.VampireFarmConfig.FarmMode = "Vampire"
 end
@@ -1240,7 +1351,45 @@ if type(configuredToggleKey) ~= "string"
     env.VampireFarmConfig.ToggleKeybind = "RightShift"
 end
 if type(env.VampireFarmConfig.InstantKillEnabled) ~= "boolean" then
-    env.VampireFarmConfig.InstantKillEnabled = false
+    env.VampireFarmConfig.InstantKillEnabled = true
+end
+if env.VampireFarmConfig.InstantKillMethod ~= "Dead state"
+    and env.VampireFarmConfig.InstantKillMethod ~= "Local health" then
+    env.VampireFarmConfig.InstantKillMethod = "Dead state"
+end
+env.VampireFarmConfig.OwnDamageThresholdPercent = nil
+env.VampireFarmOwnDamageReady = nil
+if type(env.VampireFarmConfig.PartyDamageGateEnabled) ~= "boolean" then
+    env.VampireFarmConfig.PartyDamageGateEnabled = false
+end
+if type(env.VampireFarmConfig.AutoInvitePlayersEnabled) ~= "boolean" then
+    env.VampireFarmConfig.AutoInvitePlayersEnabled = false
+end
+if type(env.VampireFarmConfig.AutoAcceptPartyInvitesEnabled) ~= "boolean" then
+    env.VampireFarmConfig.AutoAcceptPartyInvitesEnabled = false
+end
+do
+local threshold = tonumber(env.VampireFarmConfig.PartyDamageThresholdPercent)
+if not threshold or threshold ~= threshold
+    or threshold == math.huge or threshold == -math.huge then
+    threshold = 10
+end
+env.VampireFarmConfig.PartyDamageThresholdPercent = math.clamp(
+    math.floor(threshold + 0.5), 0, 100)
+local idleSeconds = tonumber(env.VampireFarmConfig.PartyDamageIdleSeconds)
+if not idleSeconds or idleSeconds ~= idleSeconds
+    or idleSeconds == math.huge or idleSeconds == -math.huge then
+    idleSeconds = 12
+end
+env.VampireFarmConfig.PartyDamageIdleSeconds = math.clamp(
+    math.floor(idleSeconds + 0.5), 3, 30)
+local inviteInterval = tonumber(env.VampireFarmConfig.PartyInviteIntervalSeconds)
+if not inviteInterval or inviteInterval ~= inviteInterval
+    or inviteInterval == math.huge or inviteInterval == -math.huge then
+    inviteInterval = 15
+end
+env.VampireFarmConfig.PartyInviteIntervalSeconds = math.clamp(
+    math.floor(inviteInterval + 0.5), 5, 60)
 end
 do
 local savedKillThreshold = tonumber(env.VampireFarmConfig.KillThresholdPercent)
@@ -1277,7 +1426,6 @@ env.VampireFarmConfig.GolemKillThresholdPercent = math.clamp(
     math.floor(savedGolemKillThreshold + 0.5), 0, 100)
 end
 
--- Clover UI: local, self-contained interface adapter.
 local Library, Toggles, Options = runtime.newUI()
 
 local function setNoRender(enabled)
@@ -1355,6 +1503,7 @@ local bossTarget
 local apexTarget
 local radiusConnection
 local attachConnection
+env.VampireFarmPinState = {}
 local breakerHeartbeatConnection
 local breakerRenderConnection
 local breakerSimulationConnection
@@ -1364,6 +1513,20 @@ local bossAddedConnection
 local chestAddedConnection
 local cameraBinding = "VampireFarmCamera"
 local previousCameraType, previousCameraSubject
+
+local silentAim = {Target = nil, Until = 0, ManaResetCharacter = nil}
+local kaldrisDodgeUntil=0
+env.VampireFarmPartyGate = {
+    -- Party damage waiting is temporarily disabled; KillThreshold remains in use.
+}
+env.VampireFarmPartyAutomation = {
+    LastInviteAt = setmetatable({}, {__mode = "k"}),
+    LastAnyInviteAt = -math.huge,
+}
+
+function env.VampireFarmPinState:Clear()
+    self.Mob, self.Root, self.CFrame = nil, nil, nil
+end
 
 local function restoreBreakerVelocity()
     if breakerRoot and breakerRoot.Parent and breakerSavedVelocity then
@@ -1389,9 +1552,14 @@ end
 
 env.StopVampireFarm = function()
     if not running then return end
+    runtime.saveSettings()
     running = false
+    runtime.kaldrisDodging=false
+    RunService:UnbindFromRenderStep(cameraBinding)
+    restoreCamera()
     if radiusConnection then radiusConnection:Disconnect() end
     if attachConnection then attachConnection:Disconnect() end
+    env.VampireFarmPinState:Clear()
     if breakerHeartbeatConnection then breakerHeartbeatConnection:Disconnect() end
     if breakerRenderConnection then breakerRenderConnection:Disconnect() end
     if breakerSimulationConnection then breakerSimulationConnection:Disconnect() end
@@ -1399,8 +1567,30 @@ env.StopVampireFarm = function()
     if antiAfkConnection then antiAfkConnection:Disconnect() end
     if bossAddedConnection then bossAddedConnection:Disconnect() end
     if chestAddedConnection then chestAddedConnection:Disconnect() end
-    RunService:UnbindFromRenderStep(cameraBinding)
-    restoreCamera()
+    if silentAim.ManaChangedConnection then silentAim.ManaChangedConnection:Disconnect() end
+    if silentAim.LoadedChangedConnection then silentAim.LoadedChangedConnection:Disconnect() end
+    if silentAim.CharacterAddedConnection then silentAim.CharacterAddedConnection:Disconnect() end
+    if env.VampireFarmPartyAutomation.PlayerAddedConnection then
+        env.VampireFarmPartyAutomation.PlayerAddedConnection:Disconnect()
+    end
+    if env.VampireFarmPartyAutomation.PlayerRemovingConnection then
+        env.VampireFarmPartyAutomation.PlayerRemovingConnection:Disconnect()
+    end
+    silentAim.Target = nil
+    silentAim.Until = 0
+    if silentAim.Remote and silentAim.RemoteWrapper then
+        pcall(function()
+            if type(getcallbackvalue) == "function"
+                and getcallbackvalue(silentAim.Remote, "OnClientInvoke")
+                    == silentAim.RemoteWrapper then
+                silentAim.Remote.OnClientInvoke = silentAim.OriginalRemote
+            end
+        end)
+    end
+    if silentAim.GameGlobal and silentAim.GlobalWrapper
+        and silentAim.GameGlobal.GetMouse == silentAim.GlobalWrapper then
+        silentAim.GameGlobal.GetMouse = silentAim.OriginalGlobal
+    end
     if env.VampireFarmConfig.NoRender then setNoRender(false) end
     env.VampireFarmConfig.AutoStatEnabled = false
     env.VampireFarmConfig.AutoSkillEnabled = false
@@ -1427,8 +1617,15 @@ Library.AccentColor = Color3.fromHex("6699cc")
 Library.OutlineColor = Color3.fromHex("343d46")
 Library.FontColor = Color3.fromHex("d8dee9")
 
+function golem.enableCombat()
+    teleportPaused=false; runtime.paused=false
+    runtime.config.AutoM1=true
+    if runtime.sharedToggles and runtime.sharedToggles.HubM1 then runtime.sharedToggles.HubM1:SetValue(true) end
+    env.VampireFarmConfig.AutoAttachEnabled=true
+    if Toggles.AutoAttachEnabled then Toggles.AutoAttachEnabled:SetValue(true) end
+end
 local Window = Library:CreateWindow({
-    Title = "Clover Retribution",
+    Title = "Clover",
     Center = true,
     AutoShow = true,
     Size = UDim2.fromOffset(560, 520),
@@ -1436,9 +1633,12 @@ local Window = Library:CreateWindow({
 })
 local farmTab = Window:AddTab("Overview")
 local mobTab = Window:AddTab("Mobs")
+oreFarm.Tab = Window:AddTab("Ore Farm")
 local bossTab = Window:AddTab("Bosses")
+kraken.Tab = Window:AddTab("Kraken Farm")
 local teleportTab = Window:AddTab("Teleport")
 local lootTab = Window:AddTab("Loot")
+env.VampireFarmPartyAutomation.Tab = Window:AddTab("Party")
 local attachTab = Window:AddTab("Movement")
 local skillsTab = Window:AddTab("Skills")
 do
@@ -1466,9 +1666,14 @@ Toggles.KaldrisCombat:OnChanged(function(enabled)
     -- OnChanged runs immediately while later controls are still being constructed.
     if not Options.BossTargets or not Toggles.BossFarmEnabled then return end
     if enabled then teleportPaused=false; runtime.paused=false end
+    runtime.config.AutoCollect=false; runtime.config.AutoQuestPrompt=false
+    if runtime.sharedToggles then
+        if runtime.sharedToggles.HubCollect then runtime.sharedToggles.HubCollect:SetValue(false) end
+        if runtime.sharedToggles.HubAutoQuestPrompt then runtime.sharedToggles.HubAutoQuestPrompt:SetValue(false) end
+    end
     if Toggles.VampireFarmEnabled then Toggles.VampireFarmEnabled:SetValue(false) end
     if Toggles.MobFarmEnabled then Toggles.MobFarmEnabled:SetValue(false) end
-    for _,id in ipairs({"ApexFarmEnabled","PrimeApexFarmEnabled","GolemFarmEnabled","AutoChestLootEnabled"}) do
+    for _,id in ipairs({"ApexFarmEnabled","PrimeApexFarmEnabled","GolemFarmEnabled","AutoChestLootEnabled","OreFarmEnabled","KrakenFarmEnabled"}) do
         if Toggles[id] then Toggles[id]:SetValue(false) end
     end
     Options.BossTargets:SetValue(enabled and {Kaldris=true} or {})
@@ -1509,6 +1714,8 @@ local statBox = farmTab:AddRightGroupbox("Stats")
 local vampireBox = farmTab:AddLeftGroupbox("Vampire Farm")
 local mobBox = mobTab:AddLeftGroupbox("Mob Farm")
 local mobSettingsBox = mobTab:AddRightGroupbox("Priority and Spawn")
+oreFarm.Box = oreFarm.Tab:AddLeftGroupbox("Ore Farm")
+oreFarm.TimingBox = oreFarm.Tab:AddRightGroupbox("Timing")
 local bossBox = bossTab:AddLeftGroupbox("Boss Farm")
 local apexBox = bossTab:AddRightGroupbox("Apex Farm")
 local primeApexBox = bossTab:AddRightGroupbox("Prime Apex Farm")
@@ -1517,6 +1724,8 @@ local npcTeleportBox = teleportTab:AddRightGroupbox("NPCs")
 local mobTeleportBox = teleportTab:AddRightGroupbox("Mobs")
 local teleportControlBox = teleportTab:AddLeftGroupbox("Farm Control")
 local lootBox = lootTab:AddLeftGroupbox("Auto Chest Loot")
+env.VampireFarmPartyAutomation.Box = env.VampireFarmPartyAutomation.Tab:AddLeftGroupbox("Party automation")
+env.VampireFarmPartyAutomation.Tab:AddRightGroupbox("Availability"):AddLabel("Party invites are available when enabled. Automatic acceptance and party damage waiting are disabled in the supplied script.",true)
 local attachBox = attachTab:AddLeftGroupbox("Auto Attach")
 local aiBreakerBox = attachTab:AddRightGroupbox("AI Breaker")
 local skillsBox = skillsTab:AddLeftGroupbox("Auto Skill")
@@ -1529,12 +1738,13 @@ do
     Options.FarmCameraDistance:OnChanged(function(value) env.VampireFarmConfig.FarmCameraDistance=value end)
 end
 local uiBox = uiTab:AddLeftGroupbox("Window")
+
 do
     local hudBox=uiTab:AddRightGroupbox("Live Status HUD")
     if type(env.VampireFarmConfig.HUDEnabled)~="boolean" then env.VampireFarmConfig.HUDEnabled=true end
     hudBox:AddToggle("CloverHUDEnabled",{Text="Show status HUD",Default=env.VampireFarmConfig.HUDEnabled})
     Toggles.CloverHUDEnabled:OnChanged(function(value)
-        env.VampireFarmConfig.HUDEnabled=value
+        env.VampireFarmConfig.HUDEnabled=value; runtime.config.HUDEnabled=value
         if golem.HUD then golem.HUD:SetVisible(value) end
     end)
     hudBox:AddLabel("The HUD stays visible when the main menu is hidden. Drag its title to move it; use − to collapse it.",true)
@@ -1586,25 +1796,77 @@ local function addDropdownSearch(groupbox, dropdownId, label)
     end)
 end
 
+do
+local krakenBox = kraken.Tab:AddLeftGroupbox("Desert Kraken")
+local krakenSafetyBox = kraken.Tab:AddRightGroupbox("Sand Dive Protection")
+krakenBox:AddToggle("KrakenFarmEnabled", {
+    Text = "Kraken Farm",
+    Default = env.VampireFarmConfig.KrakenFarmEnabled,
+    Tooltip = "Prioritizes a live Desert Kraken, then resumes the previous farm.",
+})
+Toggles.KrakenFarmEnabled:OnChanged(function(enabled)
+    if enabled then golem.enableCombat() end
+    env.VampireFarmConfig.KrakenFarmEnabled = enabled
+    if not enabled then
+        kraken.Target = nil
+        kraken.SafeUntil = 0
+        kraken.Waiting = false
+        if targetSource == "Kraken" then
+            target = nil
+            targetSource = nil
+        end
+    end
+end)
+krakenBox:AddLabel("Prime Apex > Apex > Kraken > Golem > bosses > current farm.", true)
+krakenBox:AddLabel("Targets a live Kraken; its spawn is controlled by the game.", true)
+
+krakenSafetyBox:AddToggle("KrakenDiveProtection", {
+    Text = "Avoid Sand Dive",
+    Default = env.VampireFarmConfig.KrakenDiveProtectionEnabled,
+})
+Toggles.KrakenDiveProtection:OnChanged(function(enabled)
+    env.VampireFarmConfig.KrakenDiveProtectionEnabled = enabled
+    if not enabled then
+        kraken.SafeUntil = 0
+        kraken.Waiting = false
+    end
+end)
+krakenSafetyBox:AddSlider("KrakenHoverDistance", {
+    Text = "Wait distance", Default = env.VampireFarmConfig.KrakenHoverDistance,
+    Min = 80, Max = 800, Rounding = 0,
+})
+Options.KrakenHoverDistance:OnChanged(function(value)
+    env.VampireFarmConfig.KrakenHoverDistance = value
+end)
+krakenSafetyBox:AddSlider("KrakenHoverHeight", {
+    Text = "Air height", Default = env.VampireFarmConfig.KrakenHoverHeight,
+    Min = 100, Max = 1000, Rounding = 0,
+})
+Options.KrakenHoverHeight:OnChanged(function(value)
+    env.VampireFarmConfig.KrakenHoverHeight = value
+end)
+krakenSafetyBox:AddSlider("KrakenSafetySeconds", {
+    Text = "Stay back after dive", Default = env.VampireFarmConfig.KrakenSafetySeconds,
+    Min = 1, Max = 8, Rounding = 1,
+})
+Options.KrakenSafetySeconds:OnChanged(function(value)
+    env.VampireFarmConfig.KrakenSafetySeconds = value
+end)
+krakenSafetyBox:AddLabel("Floats outside the arena during dive, emergence, or invulnerability.", true)
+end
+
 bossBox:AddToggle("BossFarmEnabled", {
     Text = "Auto Boss Farm",
     Default = env.VampireFarmConfig.BossFarmEnabled,
     Tooltip = "Interrupts the current farm for any live listed boss, then resumes it.",
 })
 Toggles.BossFarmEnabled:OnChanged(function(enabled)
-    if enabled then
-        teleportPaused=false; runtime.paused=false
-        runtime.config.AutoM1=true
-        if runtime.sharedToggles and runtime.sharedToggles.HubM1 then runtime.sharedToggles.HubM1:SetValue(true) end
-        env.VampireFarmConfig.AutoAttachEnabled=true
-        if Toggles.AutoAttachEnabled then Toggles.AutoAttachEnabled:SetValue(true) end
-    end
+    if enabled then golem.enableCombat() end
     env.VampireFarmConfig.BossFarmEnabled = enabled
     if not enabled and targetSource == "Boss" then
         bossTarget = nil
         target = nil
         targetSource = nil
-        restoreCamera()
     end
 end)
 local initialBossSelection = {}
@@ -1631,7 +1893,6 @@ Options.BossTargets:OnChanged(function(selected)
         if targetSource == "Boss" then
             target = nil
             targetSource = nil
-            restoreCamera()
         end
     end
 end)
@@ -1653,12 +1914,12 @@ apexBox:AddToggle("ApexFarmEnabled", {
     Tooltip = "Farm Apex separately from Prime Apex and selected bosses.",
 })
 Toggles.ApexFarmEnabled:OnChanged(function(enabled)
+    if enabled then golem.enableCombat() end
     env.VampireFarmConfig.ApexFarmEnabled = enabled
     if not enabled and targetSource == "Apex" then
         apexTarget = nil
         target = nil
         targetSource = nil
-        restoreCamera()
     end
 end)
 apexBox:AddLabel("Target: Apex", true)
@@ -1708,12 +1969,12 @@ primeApexBox:AddToggle("PrimeApexFarmEnabled", {
     Tooltip = "Farm Prime Apex separately from Apex and selected bosses.",
 })
 Toggles.PrimeApexFarmEnabled:OnChanged(function(enabled)
+    if enabled then golem.enableCombat() end
     env.VampireFarmConfig.PrimeApexFarmEnabled = enabled
     if not enabled and targetSource == "PrimeApex" then
         apexTarget = nil
         target = nil
         targetSource = nil
-        restoreCamera()
     end
 end)
 primeApexBox:AddLabel("Target: Prime Apex", true)
@@ -1765,6 +2026,7 @@ golemBox:AddToggle("GolemFarmEnabled", {
     Tooltip = "Insert the four runes, enter the gate, then farm the golem.",
 })
 Toggles.GolemFarmEnabled:OnChanged(function(enabled)
+    if enabled then golem.enableCombat() end
     env.VampireFarmConfig.GolemFarmEnabled = enabled
     if not enabled and (targetSource == "Golem"
         or targetSource == "GolemShard"
@@ -1773,7 +2035,6 @@ Toggles.GolemFarmEnabled:OnChanged(function(enabled)
         golem.ShardTarget = nil
         target = nil
         targetSource = nil
-        restoreCamera()
     end
 end)
 golemBox:AddSlider("GolemKillThreshold", {
@@ -1845,6 +2106,15 @@ attachBox:AddToggle("AutoAttachEnabled", {
 Toggles.AutoAttachEnabled:OnChanged(function(enabled)
     env.VampireFarmConfig.AutoAttachEnabled = enabled
 end)
+attachBox:AddToggle("OwnedMobPinEnabled", {
+    Text = "Pin owned mob",
+    Default = env.VampireFarmConfig.OwnedMobPinEnabled,
+    Tooltip = "Holds the active target in place while you own its physics.",
+})
+Toggles.OwnedMobPinEnabled:OnChanged(function(enabled)
+    env.VampireFarmConfig.OwnedMobPinEnabled = enabled
+    if not enabled then env.VampireFarmPinState:Clear() end
+end)
 attachBox:AddSlider("AttachDistance", {
     Text = "Back distance (Z)",
     Default = math.clamp(followDistance(), 1, 150),
@@ -1911,22 +2181,21 @@ Options.AIBreakerType:OnChanged(function(value)
 end)
 aiBreakerBox:AddLabel("Runs only while Auto Attach has a live target.", true)
 
+
 local syncingMode = false
 local function setFarmMode(mode)
-    if activeMode == mode then return end
     if mode~="Off" then
         teleportPaused=false; runtime.paused=false
-        runtime.config.AutoM1=true
-        if runtime.sharedToggles and runtime.sharedToggles.HubM1 then runtime.sharedToggles.HubM1:SetValue(true) end
-        env.VampireFarmConfig.AutoAttachEnabled=true
-        if Toggles.AutoAttachEnabled then Toggles.AutoAttachEnabled:SetValue(true) end
+        if mode~="Ore" then golem.enableCombat() end
     end
+    if activeMode == mode then return end
     activeMode = mode
     env.VampireFarmConfig.FarmMode = mode
-    if not bossTarget and not apexTarget then
+    oreFarm.Current = nil
+    oreFarm.Phase = nil
+    if not bossTarget and not apexTarget and not kraken.Target then
         target = nil
         targetSource = nil
-        restoreCamera()
     end
     syncingMode = true
     if Toggles.VampireFarmEnabled then
@@ -1934,6 +2203,9 @@ local function setFarmMode(mode)
     end
     if Toggles.MobFarmEnabled then
         Toggles.MobFarmEnabled:SetValue(mode == "Mob")
+    end
+    if Toggles.OreFarmEnabled then
+        Toggles.OreFarmEnabled:SetValue(mode == "Ore")
     end
     syncingMode = false
     print("[VampireFarm] Mode: " .. mode)
@@ -1963,6 +2235,75 @@ Toggles.MobFarmEnabled:OnChanged(function(enabled)
         setFarmMode("Off")
     end
 end)
+
+do
+local oreBox = oreFarm.Box
+local oreTimingBox = oreFarm.TimingBox
+oreBox:AddToggle("OreFarmEnabled", {
+    Text = "Enable Ore Farm",
+    Default = activeMode == "Ore",
+    Tooltip = "Mines selected ores; live boss targets still take priority.",
+})
+Toggles.OreFarmEnabled:OnChanged(function(enabled)
+    if syncingMode then return end
+    if enabled then
+        setFarmMode("Ore")
+    elseif activeMode == "Ore" then
+        setFarmMode("Off")
+    end
+end)
+local initialOreSelection = {}
+for _, name in ipairs(oreFarm.Names) do
+    if env.VampireFarmConfig.SelectedOres[name] then
+        table.insert(initialOreSelection, name)
+    end
+end
+oreBox:AddDropdown("OreTargets", {
+    Text = "Ores to mine",
+    Values = oreFarm.Names,
+    Default = initialOreSelection,
+    Multi = true,
+    AllowNull = true,
+})
+addDropdownSearch(oreBox, "OreTargets", "ores")
+Options.OreTargets:OnChanged(function(selected)
+    selected = type(selected) == "table" and selected or {}
+    for _, name in ipairs(oreFarm.Names) do
+        env.VampireFarmConfig.SelectedOres[name] = selected[name] == true or nil
+    end
+    if oreFarm.Current and not env.VampireFarmConfig.SelectedOres[
+        oreFarm.Current:GetAttribute("LinkedItem")] then
+        oreFarm.Current, oreFarm.Phase = nil, nil
+    end
+end)
+oreBox:AddButton("Select All", function()
+    local selected = {}
+    for _, name in ipairs(oreFarm.Names) do selected[name] = true end
+    Options.OreTargets:SetValue(selected)
+end)
+oreBox:AddButton("Deselect All", function()
+    Options.OreTargets:SetValue({})
+end)
+oreBox:AddLabel("Live bosses interrupt mining; ore farming resumes afterward.", true)
+oreTimingBox:AddSlider("OreMineSeconds", {
+    Text = "Mining time",
+    Default = env.VampireFarmConfig.OreMineSeconds,
+    Min = 0, Max = 60, Rounding = 1, Suffix = " s",
+    Tooltip = "Time to remain at a node after triggering its prompt.",
+})
+Options.OreMineSeconds:OnChanged(function(value)
+    env.VampireFarmConfig.OreMineSeconds = oreFarm.boundedTime(value, 2, 60)
+end)
+oreTimingBox:AddSlider("OreDelaySeconds", {
+    Text = "Wait after mining",
+    Default = env.VampireFarmConfig.OreDelaySeconds,
+    Min = 0, Max = 5, Rounding = 1, Suffix = " s",
+})
+Options.OreDelaySeconds:OnChanged(function(value)
+    env.VampireFarmConfig.OreDelaySeconds = oreFarm.boundedTime(value, 1, 5)
+end)
+oreTimingBox:AddLabel("Each ore uses the game's 0.5-second prompt.", true)
+end
 
 local knownMobNames = {}
 for _, name in ipairs(MOB_NAME_SEED) do
@@ -2080,12 +2421,6 @@ end)
 
 local mobSignature = ""
 local function refreshMobNames()
-    for _, model in ipairs(enemies:GetChildren()) do
-        if model:IsA("Model") and model:FindFirstChildOfClass("Humanoid")
-            and MOB_NAMES[model.Name] then
-            knownMobNames[model.Name] = true
-        end
-    end
     local names = mobNameList()
     local signature = table.concat(names, "\n")
     if signature == mobSignature then return end
@@ -2106,21 +2441,86 @@ local function refreshMobNames()
     refreshingMobs = false
 end
 refreshMobNames()
-task.spawn(function()
-    while running do
-        refreshMobNames()
-        task.wait(1)
-    end
-end)
 
 combatBox:AddToggle("VampireInstantKill", {
-    Text = "Instant kill attempt (unconfirmed)",
+    Text = "Instant kill attempt",
     Default = env.VampireFarmConfig.InstantKillEnabled,
-    Tooltip = "Attempts client health manipulation at the HP threshold. Server kills and rewards are not guaranteed.",
+    Tooltip = "Attempt the local HP kill when the mob reaches its HP threshold.",
 })
 Toggles.VampireInstantKill:OnChanged(function(value)
     env.VampireFarmConfig.InstantKillEnabled = value
 end)
+combatBox:AddDropdown("VampireInstantKillMethod", {
+    Text = "Insta Kill method",
+    Values = {"Dead state", "Local health"},
+    Default = env.VampireFarmConfig.InstantKillMethod,
+})
+addDropdownSearch(combatBox, "VampireInstantKillMethod", "kill methods")
+Options.VampireInstantKillMethod:OnChanged(function(value)
+    env.VampireFarmConfig.InstantKillMethod = value
+end)
+--[[ Temporarily disabled: party damage waiting controls.
+combatBox:AddToggle("VampirePartyDamageGate", {
+    Text = "Wait for party damage",
+    Default = env.VampireFarmConfig.PartyDamageGateEnabled,
+    Tooltip = "Wait for party members contributing to this mob, without stopping your own damage progress.",
+})
+Toggles.VampirePartyDamageGate:OnChanged(function(value)
+    env.VampireFarmConfig.PartyDamageGateEnabled = value
+end)
+combatBox:AddSlider("VampirePartyDamageThreshold", {
+    Text = "Damage per party member",
+    Default = env.VampireFarmConfig.PartyDamageThresholdPercent,
+    Min = 0,
+    Max = 100,
+    Rounding = 0,
+    Suffix = "% of mob max HP",
+})
+Options.VampirePartyDamageThreshold:OnChanged(function(value)
+    env.VampireFarmConfig.PartyDamageThresholdPercent = value
+end)
+combatBox:AddSlider("VampirePartyDamageIdleSeconds", {
+    Text = "Stop waiting after no damage",
+    Default = env.VampireFarmConfig.PartyDamageIdleSeconds,
+    Min = 3,
+    Max = 30,
+    Rounding = 0,
+    Suffix = "s",
+})
+Options.VampirePartyDamageIdleSeconds:OnChanged(function(value)
+    env.VampireFarmConfig.PartyDamageIdleSeconds = value
+end)
+]]
+env.VampireFarmPartyAutomation.Box:AddToggle("VampireAutoInvitePlayers", {
+    Text = "Invite players to my party",
+    Default = env.VampireFarmConfig.AutoInvitePlayersEnabled,
+    Tooltip = "Invite players in this server and retry until they join your party.",
+})
+Toggles.VampireAutoInvitePlayers:OnChanged(function(value)
+    env.VampireFarmConfig.AutoInvitePlayersEnabled = value
+end)
+env.VampireFarmPartyAutomation.Box:AddSlider("VampirePartyInviteInterval", {
+    Text = "Retry invite after",
+    Default = env.VampireFarmConfig.PartyInviteIntervalSeconds,
+    Min = 5,
+    Max = 60,
+    Rounding = 0,
+    Suffix = "s",
+})
+Options.VampirePartyInviteInterval:OnChanged(function(value)
+    env.VampireFarmConfig.PartyInviteIntervalSeconds = value
+end)
+--[[ Temporarily disabled: automatic party invite acceptance.
+env.VampireFarmPartyAutomation.Box:AddToggle("VampireAutoAcceptPartyInvites", {
+    Text = "Accept party invites",
+    Default = env.VampireFarmConfig.AutoAcceptPartyInvitesEnabled,
+    Tooltip = "Accept visible in-game party invitation dialogs while you are not already in a party.",
+})
+Toggles.VampireAutoAcceptPartyInvites:OnChanged(function(value)
+    env.VampireFarmConfig.AutoAcceptPartyInvitesEnabled = value
+end)
+]]
+
 
 combatBox:AddSlider("VampireKillThreshold", {
     Text = "Mob HP threshold",
@@ -2180,12 +2580,73 @@ Toggles.VampireAutoStat:OnChanged(function(value)
     env.VampireFarmConfig.AutoStatEnabled = value
 end)
 
+skillsBox:AddToggle("VampireAutoEquipWeapon", {
+    Text = "Auto Equip Weapon",
+    Default = env.VampireFarmConfig.AutoEquipWeaponEnabled,
+})
+Toggles.VampireAutoEquipWeapon:OnChanged(function(value)
+    env.VampireFarmConfig.AutoEquipWeaponEnabled = value
+end)
 skillsBox:AddToggle("VampireAutoSkill", {
     Text = "Auto Skill",
     Default = env.VampireFarmConfig.AutoSkillEnabled,
 })
 Toggles.VampireAutoSkill:OnChanged(function(value)
     env.VampireFarmConfig.AutoSkillEnabled = value
+    if not value then silentAim.Target, silentAim.Until = nil, 0 end
+    if silentAim.CheckManaReset then silentAim.CheckManaReset(player.Character) end
+end)
+skillsBox:AddToggle("VampireAutoSkillManaGate", {
+    Text = "Pause skills below mana threshold",
+    Default = env.VampireFarmConfig.AutoSkillManaGateEnabled,
+})
+Toggles.VampireAutoSkillManaGate:OnChanged(function(value)
+    env.VampireFarmConfig.AutoSkillManaGateEnabled = value
+end)
+skillsBox:AddSlider("VampireAutoSkillManaThreshold", {
+    Text = "Resume skills at mana",
+    Default = env.VampireFarmConfig.AutoSkillManaThresholdPercent,
+    Min = 0,
+    Max = 100,
+    Rounding = 0,
+    Suffix = "%",
+})
+Options.VampireAutoSkillManaThreshold:OnChanged(function(value)
+    env.VampireFarmConfig.AutoSkillManaThresholdPercent = value
+end)
+skillsBox:AddToggle("VampireAutoSkillResetAtLowMana", {
+    Text = "Reset character at low mana",
+    Default = env.VampireFarmConfig.AutoSkillResetAtLowMana,
+    Tooltip = "With Auto Skill on, sets your Humanoid.Health to 0 when Mana is at or below the entered amount; resumes after respawn.",
+})
+Toggles.VampireAutoSkillResetAtLowMana:OnChanged(function(value)
+    env.VampireFarmConfig.AutoSkillResetAtLowMana = value
+    if silentAim.CheckManaReset then silentAim.CheckManaReset(player.Character) end
+end)
+skillsBox:AddInput("VampireAutoSkillResetManaThreshold", {
+    Text = "Reset when Mana <=",
+    Default = tostring(env.VampireFarmConfig.AutoSkillResetManaThreshold),
+    Numeric = true,
+    Finished = true,
+})
+Options.VampireAutoSkillResetManaThreshold:OnChanged(function(value)
+    local number = tonumber(value)
+    if number and number == number and number ~= math.huge
+        and number ~= -math.huge then
+        env.VampireFarmConfig.AutoSkillResetManaThreshold = math.max(0,
+            math.floor(number + 0.5))
+        if silentAim.CheckManaReset then silentAim.CheckManaReset(player.Character) end
+    end
+end)
+skillsBox:AddToggle("VampireSilentAim", {
+    Text = "Silent Aim for Auto Skill",
+    Default = env.VampireFarmConfig.SilentAimEnabled,
+    Tooltip = "Redirects mouse-based Auto Skills to the current target without moving the camera.",
+})
+Toggles.VampireSilentAim:OnChanged(function(value)
+    env.VampireFarmConfig.SilentAimEnabled = value
+    if value and silentAim.install then silentAim.install() end
+    if not value then silentAim.Target, silentAim.Until = nil, 0 end
 end)
 skillsBox:AddDropdown("VampireSkillPicker", {
     Text = "Weapon and grimoire skills",
@@ -2213,6 +2674,8 @@ Library.ToggleKeybind = Options.VampireMenuKey
 Options.VampireMenuKey:OnChanged(function(value)
     env.VampireFarmConfig.ToggleKeybind = value
 end)
+uiBox:AddLabel("Settings save automatically. Farms start off on each execution.",true)
+uiBox:AddButton("Save config now",function() runtime.saveSettings() end)
 uiBox:AddButton("Hide window", function()
     Library:Toggle()
 end)
@@ -2223,10 +2686,13 @@ Library:OnUnload(function()
     Library.Unloaded = true
     if running then env.StopVampireFarm() end
 end)
-
 local playerGui = player:WaitForChild("PlayerGui")
 if not running or env.VampireFarmLaunchToken ~= launchToken then return end
-local function getAvailableSkills()
+local function getAvailableSkills(forceRefresh)
+    if not forceRefresh and silentAim.AvailableSkills
+        and os.clock() < silentAim.AvailableSkillsUntil then
+        return silentAim.AvailableSkills
+    end
     local hud = playerGui:FindFirstChild("HUD")
     local bar = hud and hud:FindFirstChild("WeaponSkills")
     local frame = bar and bar:FindFirstChild("Frame")
@@ -2257,6 +2723,7 @@ local function getAvailableSkills()
         if container then
             for _, tool in ipairs(container:GetChildren()) do
                 if tool:IsA("Tool") and not seenSpells[tool.Name]
+                    and tool.Name ~= "World Tree Magic: Heartwood Lance"
                     and (spellNames[tool.Name]
                         or tool:GetAttribute("Type") == "Spell"
                         or tool:GetAttribute("ItemType") == "Spell") then
@@ -2277,22 +2744,34 @@ local function getAvailableSkills()
         if a.Order == b.Order then return a.Key < b.Key end
         return a.Order < b.Order
     end)
+    silentAim.AvailableSkills = result
+    silentAim.AvailableSkillsUntil = os.clock() + 0.45
     return result
 end
 
-local refreshingSkills = true -- Preserve saved choices while registering the initial callback.
+local refreshingSkills = false
+local skillSignature = ""
 Options.VampireSkillPicker:OnChanged(function(selectedLabels)
-    if refreshingSkills or type(selectedLabels) ~= "table" then return end
-    local available = getAvailableSkills()
+    if refreshingSkills
+        or os.clock() < (silentAim.SkillPickerRefreshUntil or 0) then return end
+    local available = getAvailableSkills(true)
+    local labels = {}
+    for _, skill in ipairs(available) do
+        table.insert(labels, skill.Label)
+    end
+    if table.concat(labels, "\n") ~= skillSignature then return end
     local selected = env.VampireFarmConfig.SelectedSkills
     for _, skill in ipairs(available) do
         selected[skill.Key] = selectedLabels[skill.Label] or nil
     end
 end)
 
-local skillSignature = ""
 local function refreshSkillPicker()
-    local available = getAvailableSkills()
+    local available = getAvailableSkills(true)
+    if #available == 0
+        and next(env.VampireFarmConfig.SelectedSkills) ~= nil then
+        return
+    end
     local names = {}
     local selectedLabels = {}
     for _, skill in ipairs(available) do
@@ -2303,72 +2782,26 @@ local function refreshSkillPicker()
     end
     local signature = table.concat(names, "\n")
     if signature == skillSignature then return end
+    if signature ~= silentAim.SkillPickerPendingSignature then
+        silentAim.SkillPickerPendingSignature = signature
+        silentAim.SkillPickerPendingSince = os.clock()
+        return
+    end
+    if os.clock() - silentAim.SkillPickerPendingSince < 1 then return end
     skillSignature = signature
     refreshingSkills = true
+    silentAim.SkillPickerRefreshUntil = os.clock() + 2
     Options.VampireSkillPicker:SetValues(names)
     Options.VampireSkillPicker:SetValue(selectedLabels)
     refreshingSkills = false
 end
 refreshSkillPicker()
-refreshingSkills = false
-skillsBox:AddButton("Refresh skill list", function()
-    skillSignature = "__refresh__"
-    refreshSkillPicker()
-end)
-skillsBox:AddButton("Select all detected skills", function()
-    local selected = {}
-    for _, skill in ipairs(getAvailableSkills()) do
-        selected[skill.Label] = true
-    end
-    Options.VampireSkillPicker:SetValue(selected)
-end)
-local function printSkillStatus()
-    local character = player.Character
-    local status = character and character:FindFirstChild("Status")
-    local cooldown = status and status:FindFirstChild("Cooldown")
-    local casting = status and status:FindFirstChild("Casting")
-    local available = getAvailableSkills()
-    local selectedCount = 0
-    for _, skill in ipairs(available) do
-        local selected = env.VampireFarmConfig.SelectedSkills[skill.Key] == true
-        if selected then selectedCount += 1 end
-        print("[CloverSkills] " .. skill.Label .. " | selected=" .. tostring(selected)
-            .. " | cooldown=" .. tostring(cooldown and cooldown:FindFirstChild(skill.Name) ~= nil)
-            .. " | toolEnabled=" .. tostring(skill.Tool and skill.Tool.Enabled))
-    end
-    print("[CloverSkills] enabled=" .. tostring(env.VampireFarmConfig.AutoSkillEnabled)
-        .. " | detected=" .. #available .. " | selected=" .. selectedCount
-        .. " | status=" .. tostring(status ~= nil)
-        .. " | cooldownFolder=" .. tostring(cooldown ~= nil)
-        .. " | casting=" .. tostring(casting and casting.Value)
-        .. " | target=" .. tostring(target and target.Name))
-    if selectedCount == 0 then
-        warn("[CloverSkills] Select skills from the dropdown or click Select all detected skills.")
-    end
-    if not target then
-        warn("[CloverSkills] Auto Skill needs a live farm target; enable the intended farm.")
-    end
-    if not cooldown then
-        warn("[CloverSkills] Character.Status.Cooldown is missing; skill activation is currently blocked.")
-    end
-end
-skillsBox:AddButton("Print skill status", printSkillStatus)
 task.spawn(function()
     while running do
         refreshSkillPicker()
         task.wait(0.5)
     end
 end)
-
-if type(getconnections) == "function" then
-    local ok, connections = pcall(getconnections, player.Idled)
-    if ok then
-        for _, connection in ipairs(connections) do
-            pcall(function() connection:Disable() end)
-            pcall(function() connection:Disconnect() end)
-        end
-    end
-end
 
 antiAfkConnection = player.Idled:Connect(function()
     local ok, err = pcall(function()
@@ -2405,7 +2838,7 @@ task.spawn(function()
                         and type(data.CoreData) == "table"
                         and tonumber(data.CoreData.StatPoints) or 0
 
-                    if running and not runtime.paused and env.VampireFarmConfig.AutoStatEnabled
+                    if running and env.VampireFarmConfig.AutoStatEnabled
                         and env.VampireFarmConfig.AutoStatTarget == statName
                         and points >= 1 then
                         action:FireServer("StatDump", {Stat = statName, Dump = 1})
@@ -2435,7 +2868,7 @@ radiusConnection = RunService.Heartbeat:Connect(function(dt)
 end)
 
 local function getRoot(model)
-    return model and (model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart)
+    return runtime.getRoot(model)
 end
 
 golem.Runes = {
@@ -2529,6 +2962,122 @@ function golem.clickChoice(button)
     end
     return false
 end
+
+function env.VampireFarmPartyAutomation.IsMember(other)
+    local partyRef = player:FindFirstChild("Party")
+    local party = partyRef and (partyRef:IsA("ObjectValue") and partyRef.Value or partyRef)
+    return party and party:FindFirstChild(other.Name) ~= nil
+end
+
+function env.VampireFarmPartyAutomation.Invite(other)
+    if not running or runtime.paused or not env.VampireFarmConfig.AutoInvitePlayersEnabled
+        or not other or other == player or other.Parent ~= Players
+        or env.VampireFarmPartyAutomation.IsMember(other) then return false end
+
+    local ownParty = player:FindFirstChild("Party")
+    if ownParty and ownParty:IsA("ObjectValue") then return false end
+    local automation = env.VampireFarmPartyAutomation
+    local now = os.clock()
+    if now - automation.LastAnyInviteAt < 2
+        or now - (automation.LastInviteAt[other] or -math.huge)
+            < env.VampireFarmConfig.PartyInviteIntervalSeconds then return false end
+
+    local remote = action.Parent:FindFirstChild("Party")
+    if not remote or not remote:IsA("RemoteEvent") then return false end
+    local ok, err = pcall(function()
+        remote:FireServer("invite", other)
+    end)
+    if not ok then
+        warn("[VampireFarm] Party invite failed: " .. tostring(err))
+        return false
+    end
+    automation.LastInviteAt[other] = now
+    automation.LastAnyInviteAt = now
+    return true
+end
+
+--[[ Temporarily disabled: automatic party invite acceptance.
+function env.VampireFarmPartyAutomation.IsShown(button, gui)
+    local node = button
+    while node and node ~= gui do
+        if node:IsA("GuiObject") and not node.Visible then return false end
+        node = node.Parent
+    end
+    return node == gui and gui.Enabled
+end
+
+function env.VampireFarmPartyAutomation.AcceptVisibleInvite()
+    if not running or not env.VampireFarmConfig.AutoAcceptPartyInvitesEnabled
+        or player:FindFirstChild("Party") then return false end
+    local automation = env.VampireFarmPartyAutomation
+    for _, gui in ipairs(playerGui:GetChildren()) do
+        local guiName = gui.Name:lower()
+        if gui:IsA("ScreenGui") and gui.Enabled
+            and (guiName:find("dialog", 1, true)
+                or guiName:find("confirm", 1, true)
+                or guiName:find("invite", 1, true)) then
+            local textParts = {}
+            local acceptButton
+            for _, item in ipairs(gui:GetDescendants()) do
+                if item:IsA("TextLabel") or item:IsA("TextButton") then
+                    local label = item.Text:lower():gsub("%s+", " ")
+                    table.insert(textParts, label)
+                    if label == "accept" or label == "yes" or label == "join"
+                        or label:find("^accept ") or label:find("^join ") then
+                        acceptButton = item:IsA("GuiButton") and item
+                            or item:FindFirstAncestorWhichIsA("GuiButton")
+                    end
+                elseif item:IsA("ImageButton") then
+                    local name = item.Name:lower()
+                    if name == "accept" or name == "yes" or name == "join" then
+                        acceptButton = item
+                    end
+                end
+            end
+            local message = table.concat(textParts, " ")
+            if message:find("party", 1, true)
+                and (message:find("invit", 1, true)
+                    or message:find("join", 1, true))
+                and acceptButton
+                and automation.IsShown(acceptButton, gui) then
+                local now = os.clock()
+                if now - (automation.AttemptedButtons[acceptButton] or -math.huge) >= 2 then
+                    automation.AttemptedButtons[acceptButton] = now
+                    if golem.clickChoice(acceptButton) then
+                        print("[VampireFarm] Clicked a party invitation's Accept button")
+                        return true
+                    end
+                    if not automation.WarnedAcceptClick then
+                        automation.WarnedAcceptClick = true
+                        warn("[VampireFarm] Party invite found, but this executor could not click its Accept button")
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+]]
+
+env.VampireFarmPartyAutomation.PlayerAddedConnection = Players.PlayerAdded:Connect(function(other)
+    task.defer(function()
+        if running then env.VampireFarmPartyAutomation.Invite(other) end
+    end)
+end)
+env.VampireFarmPartyAutomation.PlayerRemovingConnection = Players.PlayerRemoving:Connect(function(other)
+    env.VampireFarmPartyAutomation.LastInviteAt[other] = nil
+end)
+task.spawn(function()
+    while running do
+        if env.VampireFarmConfig.AutoInvitePlayersEnabled then
+            for _, other in ipairs(Players:GetPlayers()) do
+                if env.VampireFarmPartyAutomation.Invite(other) then break end
+            end
+        end
+        -- Auto-accept is disabled; auto-invite above remains active.
+        task.wait(0.5)
+    end
+end)
 
 function golem.summonStep(root)
     if not running or not env.VampireFarmConfig.GolemFarmEnabled then return end
@@ -2670,8 +3219,8 @@ local function teleportManual(destination, facePosition, label)
     teleportPaused = true
     target, targetSource, bossTarget, apexTarget, golem.Target = nil, nil, nil, nil, nil
     golem.ShardTarget = nil
+    oreFarm.Current, oreFarm.Phase = nil, nil
     restoreBreakerVelocity()
-    restoreCamera()
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
     root.CFrame = facePosition and CFrame.lookAt(destination, facePosition)
@@ -2782,6 +3331,7 @@ for name in pairs(PRIORITY) do teleportMobSet[name] = true end
 for _, name in ipairs(MOB_NAME_SEED) do teleportMobSet[name] = true end
 for _, name in ipairs(BOSS_NAME_SEED) do teleportMobSet[name] = true end
 for name in pairs(APEX_NAMES) do teleportMobSet[name] = true end
+teleportMobSet[kraken.Name] = true
 local teleportMobNames = {}
 for name in pairs(teleportMobSet) do table.insert(teleportMobNames, name) end
 table.sort(teleportMobNames)
@@ -2822,6 +3372,7 @@ mobTeleportBox:AddButton("Teleport to Mob", function()
     end
     local spawnName = MOB_SPAWN_NAMES[name]
         or (name == "Vampire Soldier" and "VampireSoldierSpawn")
+        or (name == kraken.Name and kraken.Name)
     local mobSpawn = spawnName and spawns:FindFirstChild(spawnName)
     if mobSpawn and mobSpawn:IsA("BasePart") then
         teleportManual(mobSpawn.Position + Vector3.new(0, 5, 0),
@@ -2837,11 +3388,110 @@ teleportControlBox:AddButton("Resume Farming", function()
 end)
 
 local function goToSoldierSpawn(root)
-    if not spawn then return end
+    if not (spawn and spawn:IsA("BasePart")) then return end
     root.CFrame = CFrame.new(spawn.Position + Vector3.new(0, 5, 0))
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
     print("[VampireFarm] Moved to VampireSoldierSpawn")
+end
+
+function oreFarm.eligible(node)
+    if not (node and node:IsA("BasePart")
+        and node.Name:lower() == "orespawn"
+        and node:IsDescendantOf(workspace)
+        and node:GetAttribute("Active") ~= false
+        and env.VampireFarmConfig.SelectedOres[node:GetAttribute("LinkedItem")]) then
+        return nil
+    end
+    local prompt = node:FindFirstChildOfClass("ProximityPrompt")
+    if prompt and prompt.Enabled and prompt.MaxActivationDistance > 0 then
+        return prompt
+    end
+    return nil
+end
+
+function oreFarm.best(fromPosition)
+    local interactions = entities:FindFirstChild("Interactions")
+    local collectibles = interactions and interactions:FindFirstChild("Collectibles")
+    if not collectibles then return nil end
+    local bestNode, bestPrompt, bestDistance
+    local now = os.clock()
+    for _, folderName in ipairs(oreFarm.Folders) do
+        local folder = collectibles:FindFirstChild(folderName)
+        if folder then
+            for _, node in ipairs(folder:GetChildren()) do
+                local prompt = oreFarm.eligible(node)
+                if prompt and now >= (oreFarm.Attempted[node] or 0) then
+                    local distance = (fromPosition - node.Position).Magnitude
+                    if not bestDistance or distance < bestDistance then
+                        bestNode, bestPrompt, bestDistance = node, prompt, distance
+                    end
+                end
+            end
+        end
+    end
+    return bestNode, bestPrompt
+end
+
+function oreFarm.step(root)
+    local now = os.clock()
+    if oreFarm.Phase == "mining" then
+        if now < oreFarm.MineUntil then
+            local node = oreFarm.Current
+            if node and node:IsDescendantOf(workspace) then
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+                root.CFrame = CFrame.new(node.Position + Vector3.new(0, 3, 0))
+            end
+            return
+        end
+        oreFarm.Current, oreFarm.Phase = nil, nil
+        oreFarm.NextNodeAt = now + env.VampireFarmConfig.OreDelaySeconds
+    end
+    if now < oreFarm.NextNodeAt then return end
+    if type(fireproximityprompt) ~= "function" then
+        if now - oreFarm.LastWarningAt >= 15 then
+            warn("[VampireFarm] Ore Farm needs fireproximityprompt")
+            oreFarm.LastWarningAt = now
+        end
+        return
+    end
+
+    local node = oreFarm.Current
+    local prompt = oreFarm.eligible(node)
+    if not prompt then
+        node, prompt = oreFarm.best(root.Position)
+        if not node then
+            oreFarm.Current, oreFarm.Phase = nil, nil
+            return
+        end
+        oreFarm.Current = node
+        oreFarm.Phase = "approach"
+        oreFarm.ReadyAt = now + 0.25
+    end
+    local distance = (root.Position - node.Position).Magnitude
+    if distance > math.max(2, prompt.MaxActivationDistance - 1) then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        root.CFrame = CFrame.new(node.Position + Vector3.new(0, 3, 0))
+        oreFarm.ReadyAt = now + 0.25
+        return
+    end
+    if now < oreFarm.ReadyAt then return end
+
+    local ok, err = pcall(fireproximityprompt, prompt)
+    if not ok then
+        oreFarm.Attempted[node] = now + 5
+        oreFarm.Current, oreFarm.Phase = nil, nil
+        warn("[VampireFarm] Ore prompt failed: " .. tostring(err))
+        return
+    end
+    local cooldown = tonumber(node:GetAttribute("CD")) or 120
+    oreFarm.Attempted[node] = now + math.clamp(cooldown, 1, 600)
+    oreFarm.Phase = "mining"
+    oreFarm.MineUntil = now + env.VampireFarmConfig.OreMineSeconds
+    print("[VampireFarm] Mining " .. tostring(node:GetAttribute("LinkedItem"))
+        .. " at " .. tostring(node.Position))
 end
 
 local function mobPriority(name)
@@ -2891,6 +3541,73 @@ local function eligibleBoss(model)
         and model:GetAttribute("OverheadType") == nil
 end
 
+function kraken.eligible(model)
+    if not env.VampireFarmConfig.KrakenFarmEnabled
+        or not model or model.Name ~= kraken.Name
+        or not aliveModel(model) then
+        return false
+    end
+    if model.Parent == enemies then return true end
+    return model:GetAttribute("CollisionGroup") == "Enemy"
+        and model:GetAttribute("OverheadType") == nil
+end
+
+function kraken.diveAnimationPlaying(model)
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+    local animations = model:FindFirstChild("Anims")
+    local dive = animations and animations:FindFirstChild("dive")
+    local emerge = animations and animations:FindFirstChild("emerge")
+    if not (animator and dive and emerge) then return false end
+    local ok, tracks = pcall(function()
+        return animator:GetPlayingAnimationTracks()
+    end)
+    if not ok then return false end
+    for _, track in ipairs(tracks) do
+        local animation = track.Animation
+        local id = animation and animation.AnimationId
+        if track.IsPlaying and id
+            and (id == dive.AnimationId or id == emerge.AnimationId) then
+            return true
+        end
+    end
+    return false
+end
+
+function kraken.updateDanger(model)
+    if not env.VampireFarmConfig.KrakenDiveProtectionEnabled
+        or not kraken.eligible(model) then return false end
+    local root = getRoot(model)
+    if root then kraken.LastAnchor = root.CFrame end
+    local state = model:GetAttribute("state")
+    local submerged = type(state) == "string"
+        and state ~= "" and state:lower() ~= "above"
+    local status = model:FindFirstChild("Status")
+    local untargetable = status and status:FindFirstChild("Untargetable")
+    local attribute = model:GetAttribute("Untargetable")
+    local invulnerable = game:GetService("CollectionService")
+        :HasTag(model, "Untargetable")
+        or (untargetable and untargetable:IsA("NumberValue")
+            and untargetable.Value > 0)
+        or attribute == true or (type(attribute) == "number" and attribute > 0)
+    local danger = submerged or invulnerable
+        or kraken.diveAnimationPlaying(model)
+    if danger then
+        kraken.SafeUntil = math.max(kraken.SafeUntil,
+            os.clock() + env.VampireFarmConfig.KrakenSafetySeconds)
+        if not kraken.Waiting then
+            print("[VampireFarm] Kraken dive/phase detected; floating clear")
+            kraken.Waiting = true
+        end
+    end
+    return danger
+end
+
+function kraken.safetyActive()
+    return env.VampireFarmConfig.KrakenFarmEnabled and env.VampireFarmConfig.KrakenDiveProtectionEnabled
+        and kraken.LastAnchor ~= nil and os.clock() < kraken.SafeUntil
+end
+
 function golem.eligible(model)
     return env.VampireFarmConfig.GolemFarmEnabled
         and model and model.Name == golem.Name
@@ -2929,6 +3646,8 @@ local function trackBoss(instance)
     if instance:IsA("Model") then
         if instance.Name == golem.Name then
             golem.Candidates[instance] = true
+        elseif instance.Name == kraken.Name then
+            kraken.Candidates[instance] = true
         elseif BOSS_NAMES[instance.Name] then
             bossCandidates[instance] = true
         elseif APEX_NAMES[instance.Name] then
@@ -2957,6 +3676,20 @@ local function bestBoss(fromPosition)
     local best, bestDistance
     for model in pairs(bossCandidates) do
         if eligibleBoss(model) then
+            local distance = (getRoot(model).Position - fromPosition).Magnitude
+            if not best or distance < bestDistance then
+                best, bestDistance = model, distance
+            end
+        end
+    end
+    return best
+end
+
+function kraken.best(fromPosition)
+    for _, model in ipairs(enemies:GetChildren()) do trackBoss(model) end
+    local best, bestDistance
+    for model in pairs(kraken.Candidates) do
+        if kraken.eligible(model) then
             local distance = (getRoot(model).Position - fromPosition).Magnitude
             if not best or distance < bestDistance then
                 best, bestDistance = model, distance
@@ -3020,7 +3753,7 @@ local chestPrompts = setmetatable({}, {__mode = "k"})
 local attemptedChestPrompts = setmetatable({}, {__mode = "k"})
 local function trackChestPrompt(instance)
     if instance:IsA("ProximityPrompt") then
-        chestPrompts[instance] = true
+        chestPrompts[instance] = {IsChest = nil, NextCheck = 0}
     end
 end
 chestAddedConnection = workspace.DescendantAdded:Connect(trackChestPrompt)
@@ -3066,13 +3799,16 @@ local function chestStateAllows(prompt, chestRoot)
 end
 
 local function eligibleChest(prompt)
-    if not (prompt and prompt:IsDescendantOf(workspace)
-        and prompt.Enabled and prompt.MaxActivationDistance > 0
-        and not attemptedChestPrompts[prompt]) then
+    if not (prompt and prompt:IsDescendantOf(workspace)) then
         return false
     end
     local part, chestRoot = chestPartAndRoot(prompt)
-    return part and chestRoot and chestStateAllows(prompt, chestRoot), part, chestRoot
+    if not (part and chestRoot and prompt.Enabled
+        and prompt.MaxActivationDistance > 0
+        and not attemptedChestPrompts[prompt]) then
+        return false, part, chestRoot
+    end
+    return chestStateAllows(prompt, chestRoot), part, chestRoot
 end
 
 local missingPromptWarning = false
@@ -3086,13 +3822,20 @@ local function bestChest(fromPosition)
         return nil
     end
     local best, bestDistance
-    for prompt in pairs(chestPrompts) do
-        local eligible, part = eligibleChest(prompt)
-        if eligible then
-            local distance = (part.Position - fromPosition).Magnitude
-            if distance <= env.VampireFarmConfig.ChestLootRadius
-                and (not best or distance < bestDistance) then
-                best, bestDistance = prompt, distance
+    local now = os.clock()
+    for prompt, state in pairs(chestPrompts) do
+        if not prompt:IsDescendantOf(workspace) then
+            chestPrompts[prompt] = nil
+        elseif state.IsChest or now >= state.NextCheck then
+            local eligible, part, chestRoot = eligibleChest(prompt)
+            state.IsChest = chestRoot ~= nil
+            state.NextCheck = now + 5
+            if eligible then
+                local distance = (part.Position - fromPosition).Magnitude
+                if distance <= env.VampireFarmConfig.ChestLootRadius
+                    and (not best or distance < bestDistance) then
+                    best, bestDistance = prompt, distance
+                end
             end
         end
     end
@@ -3126,6 +3869,9 @@ local function tryOpenChest(prompt, root)
 end
 
 local function aliveTarget(model)
+    if targetSource == "Kraken" then
+        return model == kraken.Target and kraken.eligible(model)
+    end
     if targetSource == "GolemShard" then
         return model == golem.ShardTarget and golem.eligibleShard(model)
     end
@@ -3143,6 +3889,105 @@ local function aliveTarget(model)
     end
     return eligibleBaseEnemy(model)
 end
+
+function env.VampireFarmPinState:Apply()
+    if not env.VampireFarmConfig.OwnedMobPinEnabled
+        or teleportPaused or not runtime.allowCombat() or targetSource~="Base" or not target or not aliveTarget(target)
+        or type(isnetworkowner) ~= "function" then
+        self:Clear()
+        return
+    end
+
+    local root = getRoot(target)
+    if not root or not root:IsA("BasePart") or root.Anchored then
+        self:Clear()
+        return
+    end
+    local ok, owned = pcall(isnetworkowner, root)
+    if not (ok and owned) then
+        self:Clear()
+        return
+    end
+
+    if self.Mob ~= target or self.Root ~= root then
+        self.Mob, self.Root, self.CFrame = target, root, root.CFrame
+    end
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    root.CFrame = self.CFrame
+end
+
+
+function silentAim.resolve()
+    if not running or teleportPaused or not runtime.allowCombat() or not env.VampireFarmConfig.AutoSkillEnabled
+        or not env.VampireFarmConfig.SilentAimEnabled
+        or os.clock() > silentAim.Until
+        or silentAim.Target ~= target
+        or not aliveTarget(silentAim.Target) then
+        return nil
+    end
+    local part = getRoot(silentAim.Target)
+    if not part then return nil end
+    return {Position = part.Position, Target = part}
+end
+
+function silentAim.arm(enemy, seconds)
+    if env.VampireFarmConfig.SilentAimEnabled and enemy == target
+        and aliveTarget(enemy) then
+        silentAim.Target = enemy
+        silentAim.Until = os.clock() + seconds
+    end
+end
+
+function silentAim.install()
+    if not running or not env.VampireFarmConfig.SilentAimEnabled then return end
+    local gameGlobal = _G
+    if type(getrenv) == "function" then
+        local ok, runtime = pcall(getrenv)
+        if ok and type(runtime) == "table" and type(runtime._G) == "table" then
+            gameGlobal = runtime._G
+        end
+    end
+    if not silentAim.GlobalWrapper and type(gameGlobal.GetMouse) == "function" then
+        silentAim.GameGlobal = gameGlobal
+        silentAim.OriginalGlobal = gameGlobal.GetMouse
+        silentAim.GlobalWrapper = function(...)
+            local aim = silentAim.resolve()
+            if aim then return aim end
+            return silentAim.OriginalGlobal(...)
+        end
+        gameGlobal.GetMouse = silentAim.GlobalWrapper
+    end
+    if silentAim.RemoteWrapper then return end
+    local remote = action.Parent:FindFirstChild("GetMouse")
+    if not (remote and remote:IsA("RemoteFunction")
+        and type(getcallbackvalue) == "function") then return end
+    local ok, original = pcall(getcallbackvalue, remote, "OnClientInvoke")
+    if not ok or type(original) ~= "function" then return end
+    local wrapper = function(...)
+        local aim = silentAim.resolve()
+        if aim then return aim end
+        return original(...)
+    end
+    local installed = pcall(function() remote.OnClientInvoke = wrapper end)
+    if installed then
+        silentAim.Remote = remote
+        silentAim.OriginalRemote = original
+        silentAim.RemoteWrapper = wrapper
+    end
+end
+
+task.spawn(function()
+    local deadline = os.clock() + 20
+    repeat
+        silentAim.install()
+        if silentAim.RemoteWrapper and silentAim.GlobalWrapper then break end
+        task.wait(0.25)
+    until not running or os.clock() >= deadline
+    if running and env.VampireFarmConfig.SilentAimEnabled and not silentAim.RemoteWrapper and not silentAim.GlobalWrapper then
+        warn("[VampireFarm] Silent Aim could not find a mouse callback")
+    end
+end)
 
 local function bestEnemy(fromPosition)
     local best, bestPriority, bestDistance
@@ -3174,7 +4019,7 @@ local function goToSelectedMobSpawn(root)
             local chosenName = env.VampireFarmConfig.MobSpawnOverrides[name]
                 or MOB_SPAWN_NAMES[name]
             local chosenSpawn = chosenName and spawns:FindFirstChild(chosenName,true)
-            if chosenSpawn and not chosenSpawn:IsA("BasePart") then chosenSpawn=runtime.getRoot(chosenSpawn) end
+            if chosenSpawn and chosenSpawn:IsA("Model") then chosenSpawn=runtime.getRoot(chosenSpawn) end
             if chosenSpawn and chosenSpawn:IsA("BasePart") then
                 table.insert(candidates, {
                     Name = name,
@@ -3209,6 +4054,7 @@ local function goToSelectedMobSpawn(root)
 end
 
 local attemptedMobs = setmetatable({}, {__mode = "k"})
+local killCounts=setmetatable({}, {__mode="k"})
 
 golem.killDiagnosticTimes = setmetatable({}, {__mode = "k"})
 function golem.reportKillGate(model, reason, force)
@@ -3226,7 +4072,8 @@ function golem.inspectKill(model)
     if not model then return "no target", nil end
     if not env.VampireFarmConfig.InstantKillEnabled then return "toggle is OFF", nil end
     if targetSource == "GolemShard" then return "shards excluded: deaths must register on server", nil end
-    if attemptedMobs[model] then return "already attempted for this target", nil end
+    if (killCounts[model] or 0)>=3 then return "three unconfirmed attempts; continuing normal combat",nil end
+    if os.clock()-(attemptedMobs[model] or -math.huge)<5 then return "retry cooldown",nil end
     local root = getRoot(model)
     local humanoid = model:FindFirstChildOfClass("Humanoid")
     if not root or not humanoid or humanoid.MaxHealth <= 0 then return "root/humanoid unavailable", nil end
@@ -3251,8 +4098,12 @@ local function tryOwnedMobLocalKill(model)
     local reason,humanoid=golem.inspectKill(model)
     if not humanoid then return false end
     local previous=humanoid.Health
-    local ok,err=pcall(function() humanoid.Health=0 end)
-    attemptedMobs[model]=true
+    local ok,err=pcall(function()
+        if env.VampireFarmConfig.InstantKillMethod=="Dead state" then
+            humanoid:ChangeState(Enum.HumanoidStateType.Dead)
+        else humanoid.Health=0 end
+    end)
+    attemptedMobs[model]=os.clock(); killCounts[model]=(killCounts[model] or 0)+1
     if not ok then golem.reportKillGate(model,tostring(err),false); return false end
     golem.reportKillGate(model,"Unconfirmed local kill attempt; normal combat remains enabled",true)
     task.delay(.5,function()
@@ -3264,23 +4115,57 @@ local function tryOwnedMobLocalKill(model)
     end)
     return false
 end
-local kaldrisDodgeUntil=0
 local warnedDisabledSpawn = false
 local equipCharacter, lastEquipAttempt, equipAttempts = nil, -math.huge, 0
+
+function kraken.floatClear(myRoot)
+    local anchor = kraken.LastAnchor
+    if not anchor then return end
+    if breakerRoot then restoreBreakerVelocity() end
+    local offset = (anchor * CFrame.new(0, 0,
+        env.VampireFarmConfig.KrakenHoverDistance)).Position
+    local position = Vector3.new(offset.X,
+        anchor.Position.Y + env.VampireFarmConfig.KrakenHoverHeight,
+        offset.Z)
+    local face = Vector3.new(anchor.Position.X, position.Y, anchor.Position.Z)
+    myRoot.AssemblyLinearVelocity = Vector3.zero
+    myRoot.AssemblyAngularVelocity = Vector3.zero
+    if (face - position).Magnitude > 0.01 then
+        myRoot.CFrame = CFrame.lookAt(position, face)
+    else
+        myRoot.CFrame = CFrame.new(position)
+    end
+end
 
 -- Follow in PostSimulation and apply offsets in the mob's local space.
 -- Teleport to distant targets immediately when mobs are far apart.
 attachConnection = RunService.PostSimulation:Connect(function()
-    if not running or not runtime.allowCombat() or not env.VampireFarmConfig.AutoAttachEnabled
-        or not aliveTarget(target) then return end
+    runtime.kaldrisDodging=false
+    if not running or teleportPaused or not runtime.allowCombat() then
+        env.VampireFarmPinState:Clear()
+        return
+    end
+    env.VampireFarmPinState:Apply()
 
     local character = player.Character
     local myHumanoid = character and character:FindFirstChildOfClass("Humanoid")
     local myRoot = getRoot(character)
-    local enemyRoot = getRoot(target)
-    if not (myHumanoid and myHumanoid.Health > 0 and myRoot and enemyRoot) then
+    if not (myHumanoid and myHumanoid.Health > 0 and myRoot) then
         return
     end
+    if not teleportPaused then
+        if targetSource == "Kraken" and kraken.eligible(target) then
+            kraken.updateDanger(target)
+        end
+        if kraken.safetyActive() then
+            kraken.floatClear(myRoot)
+            return
+        end
+    end
+    if not env.VampireFarmConfig.AutoAttachEnabled
+        or not aliveTarget(target) then return end
+    local enemyRoot = getRoot(target)
+    if not enemyRoot then return end
 
     local targetCFrame = enemyRoot.CFrame
     runtime.kaldrisDodging=false
@@ -3299,12 +4184,14 @@ attachConnection = RunService.PostSimulation:Connect(function()
             return
         end
     end
+
     if env.VampireFarmConfig.IgnoreRotation then
         targetCFrame = CFrame.new(targetCFrame.Position)
     end
 
     local voidPoint = workspace:FindFirstChild("Layer2Floor1") and 18.5 or 0
-    if env.VampireFarmConfig.PreventVoiding and targetCFrame.Y < voidPoint then
+    if env.VampireFarmConfig.PreventVoiding
+        and targetSource ~= "Kraken" and targetCFrame.Y < voidPoint then
         targetCFrame = CFrame.new(targetCFrame.X, voidPoint, targetCFrame.Z)
     end
 
@@ -3317,7 +4204,12 @@ attachConnection = RunService.PostSimulation:Connect(function()
     myRoot.AssemblyLinearVelocity = Vector3.zero
     myRoot.AssemblyAngularVelocity = Vector3.zero
     if env.VampireFarmConfig.RotateTowards then
-        myRoot.CFrame = CFrame.lookAt(backCFrame.Position, targetCFrame.Position)
+        local facingPoint = Vector3.new(targetCFrame.X, backCFrame.Y, targetCFrame.Z)
+        if (facingPoint - backCFrame.Position).Magnitude > 0.01 then
+            myRoot.CFrame = CFrame.lookAt(backCFrame.Position, facingPoint)
+        else
+            myRoot.CFrame = backCFrame
+        end
     else
         myRoot.CFrame = backCFrame
     end
@@ -3326,11 +4218,14 @@ end)
 -- Apply the pathfind-breaker velocity after Auto Attach's PostSimulation reset.
 -- Restore it before the next render, or before simulation if rendering is off.
 breakerSimulationConnection = RunService.PreSimulation:Connect(function()
+    if running then env.VampireFarmPinState:Apply() end
     if breakerRoot then restoreBreakerVelocity() end
 end)
 breakerHeartbeatConnection = RunService.Heartbeat:Connect(function()
     if breakerRoot then restoreBreakerVelocity() end
-    if not running or not runtime.allowCombat() or not env.VampireFarmConfig.AIBreakerEnabled
+    if not running or teleportPaused or not runtime.allowCombat() or runtime.kaldrisDodging or not env.VampireFarmConfig.AIBreakerEnabled
+        or kraken.safetyActive()
+        or targetSource == "Kraken"
         or not env.VampireFarmConfig.AutoAttachEnabled
         or not aliveTarget(target) then return end
 
@@ -3366,6 +4261,7 @@ end)
 
 local grimoireEquipPauseUntil = -math.huge
 local function ensureSelectedWeapon(character)
+    if not env.VampireFarmConfig.AutoEquipWeaponEnabled then return end
     if character ~= equipCharacter then
         equipCharacter, lastEquipAttempt, equipAttempts = character, -math.huge, 0
     end
@@ -3391,9 +4287,7 @@ local function ensureSelectedWeapon(character)
     end
 end
 
-local lastM1Sent = -math.huge
 local lastSkillAttempt = {}
-local attackWaitStarted
 local lastBookAttempt = -math.huge
 local nextSkillIndex = 1
 local grimoireActivationSerial = 0
@@ -3472,7 +4366,7 @@ local function activateGrimoireTool(character, enemy, tool)
             task.wait(0.05)
         end
     end
-    if not running or player.Character ~= character or tool.Parent ~= character
+    if not running or teleportPaused or not runtime.allowCombat() or kraken.safetyActive() or runtime.kaldrisDodging or player.Character ~= character or tool.Parent ~= character
         or not tool.Enabled or not aliveTarget(enemy) then return false end
 
     local status = character:FindFirstChild("Status")
@@ -3481,14 +4375,15 @@ local function activateGrimoireTool(character, enemy, tool)
     if casting and casting.Value then return false end
     -- Allow the spell's equip handler to connect its activation listeners.
     task.wait(0.15)
-    if not running or player.Character ~= character or tool.Parent ~= character
+    if not running or teleportPaused or not runtime.allowCombat() or kraken.safetyActive() or runtime.kaldrisDodging or player.Character ~= character or tool.Parent ~= character
         or not aliveTarget(enemy) then return false end
     if tool.Name == "Shadow Magic: Night Coffin" then
         golem.aimCoffin(enemy)
         task.wait()
-        if not running or player.Character ~= character or tool.Parent ~= character or not aliveTarget(enemy) then return false end
+        if not running or teleportPaused or not runtime.allowCombat() or kraken.safetyActive() or runtime.kaldrisDodging or player.Character ~= character or tool.Parent ~= character or not aliveTarget(enemy) then return false end
         golem.aimCoffin(enemy)
     end
+    silentAim.arm(enemy,8)
     local activated, err = pcall(function() tool:Activate() end)
     if not activated then
         warn("[CloverSkills] Activation error for " .. tool.Name .. ": " .. tostring(err))
@@ -3555,11 +4450,15 @@ local function activateGrimoireTool(character, enemy, tool)
     return true
 end
 local function trySelectedSkill(character, enemy)
-    if not runtime.allowCombat() or not env.VampireFarmConfig.AutoSkillEnabled
+    if not running or teleportPaused or not runtime.allowCombat() or kraken.safetyActive() or runtime.kaldrisDodging or not env.VampireFarmConfig.AutoSkillEnabled
+        or character ~= player.Character or enemy ~= target
         or not aliveTarget(enemy) then
         return false
     end
-
+    if env.VampireFarmConfig.AutoSkillManaGateEnabled then
+        local mana=runtime.mana()
+        if not mana or mana<env.VampireFarmConfig.AutoSkillManaThresholdPercent then return false end
+    end
     local status = character:FindFirstChild("Status")
     local cooldown = status and status:FindFirstChild("Cooldown")
     local casting = status and status:FindFirstChild("Casting")
@@ -3573,8 +4472,6 @@ local function trySelectedSkill(character, enemy)
         return false
     end
 
-    local waitingForAttack = false
-    local combat = status:FindFirstChild("Combat")
     local available = getAvailableSkills()
     for offset = 0, #available - 1 do
         local index = (nextSkillIndex + offset - 1) % #available + 1
@@ -3593,15 +4490,13 @@ local function trySelectedSkill(character, enemy)
                         if not aliveTarget(enemy) then return false end
                         lastSkillAttempt[skill.Key] = os.clock()
                         nextSkillIndex = index % #available + 1
-                        attackWaitStarted = nil
+                        silentAim.arm(enemy, 8)
                         local sent, err = pcall(function()
                             action:FireServer("Toolbar", {WeaponSkill = name})
                         end)
                         if sent then return true end
+                        silentAim.Target, silentAim.Until = nil, 0
                         warn("[VampireFarm] Weapon skill failed: " .. tostring(err))
-                    end
-                    if combat and combat:GetAttribute("Attacking") == true then
-                        waitingForAttack = true
                     end
                 end
             else
@@ -3625,11 +4520,13 @@ local function trySelectedSkill(character, enemy)
                         and (tool.Parent == character
                             or tool.Parent == player:FindFirstChildOfClass("Backpack")) then
                         if not aliveTarget(enemy) then return false end
-                        lastSkillAttempt[skill.Key] = os.clock()
-                        if activateGrimoireTool(character, enemy, tool) then
+                        local ok, ready = pcall(function()
+                            return CheckService:Skill(character, name)
+                        end)
+                        if ok and ready
+                            and activateGrimoireTool(character, enemy, tool) then
                             lastSkillAttempt[skill.Key] = os.clock()
                             nextSkillIndex = index % #available + 1
-                            attackWaitStarted = nil
                             return true
                         end
                     end
@@ -3637,18 +4534,40 @@ local function trySelectedSkill(character, enemy)
             end
         end
     end
-    -- Give an M1 animation a short gap without stalling the farm forever.
-    if waitingForAttack then
-        attackWaitStarted = attackWaitStarted or os.clock()
-        if os.clock() - attackWaitStarted < 1.5 then return true end
-    end
-    attackWaitStarted = nil
     return false
 end
 
+task.spawn(function()
+    while running and env.VampireFarmLaunchToken == launchToken do
+        local waitTime = 0.15
+        local skillTarget = silentAim.SkillCombatTarget
+        local character = player.Character
+        if env.VampireFarmConfig.AutoSkillEnabled
+            and next(env.VampireFarmConfig.SelectedSkills) ~= nil
+            and skillTarget and skillTarget == target
+            and character and aliveTarget(skillTarget) then
+            waitTime = 0.03
+            local status = character:FindFirstChild("Status")
+            local casting = status and status:FindFirstChild("Casting")
+            if not casting or casting.Value == false then
+                silentAim.SkillBusy=true
+                local ok, err = pcall(trySelectedSkill, character, skillTarget)
+                silentAim.SkillBusy=false
+                if not ok then
+                    warn("[VampireFarm] Auto Skill failed: " .. tostring(err))
+                end
+            end
+        end
+        task.wait(waitTime)
+    end
+end)
+
+print("[VampireFarm] Started in " .. activeMode .. " mode; local kill threshold "
+    .. currentKillThreshold() .. "%")
+
 RunService:BindToRenderStep(cameraBinding, Enum.RenderPriority.Camera.Value + 1, function()
     if not running then return end
-    if runtime.paused then restoreCamera(); return end
+    if teleportPaused or not runtime.allowCombat() or kraken.safetyActive() then restoreCamera(); return end
     local camera = workspace.CurrentCamera
     local myRoot = getRoot(player.Character)
     local enemyRoot = getRoot(target)
@@ -3678,7 +4597,7 @@ task.spawn(function()
         local character = player.Character
         if character ~= observedCharacter then observedCharacter = character; requested = false end
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-        if env.VampireFarmConfig.AutoResetEnabled and not requested and humanoid
+        if not runtime.paused and env.VampireFarmConfig.AutoResetEnabled and not requested and humanoid
             and humanoid.MaxHealth > 0 and humanoid.Health > 0
             and humanoid.Health / humanoid.MaxHealth * 100 <= env.VampireFarmConfig.AutoResetHealthPercent then
             requested = true
@@ -3692,9 +4611,23 @@ end)
 golem.HUD=runtime.hud
 runtime.telemetry=function()
     return {Model=target,Skills=env.VampireFarmConfig.AutoSkillEnabled and "Enabled" or "Off",
-        TeleportPaused=teleportPaused,FarmMode=activeMode,BossEnabled=env.VampireFarmConfig.BossFarmEnabled}
+        TeleportPaused=teleportPaused,FarmMode=activeMode,BossEnabled=env.VampireFarmConfig.BossFarmEnabled,Source=targetSource,Ore=oreFarm.Current and oreFarm.Current:GetAttribute("LinkedItem"),KrakenSafety=kraken.safetyActive()}
 end
 local function updateTarget(fromPosition)
+    if Toggles.KaldrisCombat and Toggles.KaldrisCombat.Value then
+        local found
+        for _,model in ipairs(enemies:GetDescendants()) do
+            if model:IsA("Model") and model.Name=="Kaldris" and aliveModel(model) then found=model; break end
+        end
+        if not found then
+            for model in pairs(bossCandidates) do
+                if model.Name=="Kaldris" and aliveModel(model) and runtime.isEnemy(model) then found=model; break end
+            end
+        end
+        bossTarget=found; target=found; targetSource=found and "Boss" or nil
+        oreFarm.Current=nil; oreFarm.Phase=nil; kraken.SafeUntil=0; kraken.Waiting=false
+        return
+    end
     local primeApex
     if env.VampireFarmConfig.PrimeApexFarmEnabled then
         primeApex = eligiblePrimeApex(apexTarget) and apexTarget
@@ -3731,6 +4664,35 @@ local function updateTarget(fromPosition)
         targetSource = nil
     end
     apexTarget = nil
+
+    local foundKraken
+    if env.VampireFarmConfig.KrakenFarmEnabled then
+        foundKraken = kraken.eligible(kraken.Target) and kraken.Target
+            or kraken.best(fromPosition)
+    end
+    if foundKraken then
+        if target ~= foundKraken or targetSource ~= "Kraken" then
+            print("[VampireFarm] Kraken priority: " .. foundKraken.Name
+                .. " at " .. tostring(getRoot(foundKraken).Position))
+        end
+        kraken.Target = foundKraken
+        target = foundKraken
+        targetSource = "Kraken"
+        local root = getRoot(foundKraken)
+        if root then kraken.LastAnchor = root.CFrame end
+        return
+    end
+    if targetSource == "Kraken" then
+        if env.VampireFarmConfig.KrakenDiveProtectionEnabled
+            and kraken.LastAnchor then
+            kraken.SafeUntil = math.max(kraken.SafeUntil,
+                os.clock() + env.VampireFarmConfig.KrakenSafetySeconds)
+        end
+        print("[VampireFarm] Kraken cleared; resuming other farms")
+        target = nil
+        targetSource = nil
+    end
+    kraken.Target = nil
 
     local foundGolem
     if env.VampireFarmConfig.GolemFarmEnabled then
@@ -3789,7 +4751,7 @@ local function updateTarget(fromPosition)
         targetSource = nil
     end
     bossTarget = nil
-    if env.VampireFarmConfig.GolemFarmEnabled
+    if activeMode ~= "Ore" and env.VampireFarmConfig.GolemFarmEnabled
         and os.clock() >= golem.NextSummonAt then
         target = nil
         targetSource = "GolemSummon"
@@ -3814,7 +4776,60 @@ local function updateTarget(fromPosition)
     end
 end
 
+silentAim.CheckManaReset = function(character)
+    if not running or runtime.paused or teleportPaused or env.VampireFarmLaunchToken ~= launchToken
+        or not env.VampireFarmConfig.AutoSkillEnabled
+        or not env.VampireFarmConfig.AutoSkillResetAtLowMana
+        or not character or character ~= player.Character
+        or silentAim.ManaResetCharacter == character
+        or character:GetAttribute("Loaded") ~= true then
+        return false
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local mana = character:GetAttribute("Mana")
+    local threshold = env.VampireFarmConfig.AutoSkillResetManaThreshold
+    if not humanoid or humanoid.Health <= 0
+        or type(mana) ~= "number" or mana ~= mana
+        or mana == math.huge or mana == -math.huge
+        or type(threshold) ~= "number" or mana > threshold then
+        return false
+    end
+
+    silentAim.ManaResetCharacter = character
+    local resetOk, resetErr = pcall(function()
+        humanoid.Health = 0
+    end)
+    if not resetOk then
+        silentAim.ManaResetCharacter = nil
+        warn("[VampireFarm] Mana-threshold reset failed: " .. tostring(resetErr))
+        return false
+    end
+    warn(("[VampireFarm] Mana %.0f <= reset threshold %.0f; setting Humanoid.Health to 0")
+        :format(mana, threshold))
+    return true
+end
+
+silentAim.BindManaReset = function(character)
+    if silentAim.ManaChangedConnection then silentAim.ManaChangedConnection:Disconnect() end
+    if silentAim.LoadedChangedConnection then silentAim.LoadedChangedConnection:Disconnect() end
+    silentAim.ManaChangedConnection, silentAim.LoadedChangedConnection = nil, nil
+    if not character then return end
+
+    silentAim.ManaChangedConnection = character:GetAttributeChangedSignal("Mana"):Connect(function()
+        silentAim.CheckManaReset(character)
+    end)
+    silentAim.LoadedChangedConnection = character:GetAttributeChangedSignal("Loaded"):Connect(function()
+        silentAim.CheckManaReset(character)
+    end)
+    silentAim.CheckManaReset(character)
+end
+
+silentAim.CharacterAddedConnection = player.CharacterAdded:Connect(silentAim.BindManaReset)
+silentAim.BindManaReset(player.Character)
+
 while running do
+    silentAim.SkillCombatTarget = nil
     local character = player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     local myRoot = getRoot(character)
@@ -3822,23 +4837,42 @@ while running do
     if not (humanoid and humanoid.Health > 0 and myRoot) then
         target = nil
         targetSource = nil
-        task.wait(1)
+        task.wait(0.1)
+    elseif silentAim.CheckManaReset(character) then
+        task.wait(0.1)
     elseif teleportPaused or not runtime.allowCombat() then
         target = nil
         targetSource = nil
+        oreFarm.Current, oreFarm.Phase = nil, nil
         task.wait(0.25)
     else
         updateTarget(myRoot.Position)
 
-        if targetSource ~= "Boss" and targetSource ~= "Golem"
+        if activeMode == "Ore" and targetSource then
+            oreFarm.Current, oreFarm.Phase = nil, nil
+        end
+
+        if targetSource == "Kraken" and kraken.eligible(target) then
+            kraken.updateDanger(target)
+        end
+        if kraken.safetyActive() then
+            task.wait(0.1)
+            continue
+        elseif kraken.Waiting then
+            kraken.Waiting = false
+            print("[VampireFarm] Kraken dive/phase ended; resuming combat")
+        end
+
+        if not Toggles.KaldrisCombat.Value and targetSource ~= "Kraken" and targetSource ~= "Boss"
+            and targetSource ~= "Golem"
             and targetSource ~= "GolemShard"
             and targetSource ~= "GolemSummon" and targetSource ~= "Apex"
-            and targetSource ~= "PrimeApex" then
+            and targetSource ~= "PrimeApex"
+            and not (activeMode == "Ore" and oreFarm.Current) then
             local chest = bestChest(myRoot.Position)
             if chest then
                 target = nil
                 targetSource = nil
-                restoreCamera()
                 tryOpenChest(chest, myRoot)
                 task.wait(0.2)
                 continue
@@ -3846,25 +4880,35 @@ while running do
         end
 
         if targetSource == "GolemSummon" then
-            restoreCamera()
             golem.summonStep(myRoot)
             task.wait(0.3)
         elseif not target then
+            if Toggles.KaldrisCombat.Value then
+                task.wait(.2); continue
+            end
             if activeMode == "Vampire" then
-                if spawn and (myRoot.Position - spawn.Position).Magnitude > 80 then
+                if not spawn or spawn.Parent ~= spawns then
+                    spawn = spawns:FindFirstChild("VampireSoldierSpawn")
+                end
+                if spawn and spawn:IsA("BasePart")
+                    and (myRoot.Position - spawn.Position).Magnitude > 80 then
                     goToSoldierSpawn(myRoot)
                 end
 
                 if not warnedDisabledSpawn
-                    and spawn and spawn:GetAttribute("spawn_enabled") == false then
+                    and (not spawn
+                        or spawn:GetAttribute("spawn_enabled") == false) then
                     warnedDisabledSpawn = true
-                    warn("[VampireFarm] VampireSoldierSpawn reports spawn_enabled=false; proximity may not activate it")
+                    warn("[VampireFarm] VampireSoldierSpawn is unavailable or disabled in this place")
                 end
             elseif activeMode == "Mob" then
                 goToSelectedMobSpawn(myRoot)
+            elseif activeMode == "Ore" then
+                oreFarm.step(myRoot)
             end
 
-            task.wait(activeMode == "Off" and 0.3 or 1)
+            task.wait(activeMode == "Ore" and 0.1
+                or activeMode == "Off" and 0.3 or 1)
         else
             ensureSelectedWeapon(character)
 
@@ -3873,29 +4917,21 @@ while running do
                 continue
             end
 
+            -- Party damage waiting is disabled; continue farming this target.
+
             if tryOwnedMobLocalKill(target) then
                 target = nil
                 task.wait(runtime.config.AttackInterval)
                 continue
             end
 
-            -- Keep M1 regular even when selected skills are always ready.
-            local skillUsed = false
-            if env.VampireFarmConfig.AutoSkillEnabled
-                and os.clock() - lastM1Sent < runtime.config.AttackInterval * 2
-                and aliveTarget(target) then
-                skillUsed = trySelectedSkill(character, target)
-            end
-            local attackStatus = character:FindFirstChild("Status")
-            local activeCast = attackStatus and attackStatus:FindFirstChild("Casting")
-            if not skillUsed and runtime.allowAttack(character) and not (activeCast and activeCast.Value)
-                and aliveTarget(target) then
+            -- Skill checks run between M1 ticks, when the game clears Casting.
+            silentAim.SkillCombatTarget = target
+            if aliveTarget(target) and not silentAim.SkillBusy and runtime.allowAttack(character) and not runtime.blocked(target) then
                 local sent, err = pcall(function()
                     action:FireServer("M1", {password = "Spirit"})
                 end)
-                if sent then
-                    lastM1Sent = os.clock()
-                else
+                if not sent then
                     warn("[VampireFarm] M1 failed: " .. tostring(err))
                 end
             end
@@ -3903,10 +4939,6 @@ while running do
         end
     end
 end
-
-
-
-
 
 end
 runtime.profiles.Jungle=function()
@@ -5737,10 +6769,12 @@ env.StopCloverHub=function()
 end
 if type(readfile)=="function" and type(isfile)=="function" then
     local ok,data=pcall(function()
-        if not isfile("CloverHub-settings.json") then return nil end
-        return game:GetService("HttpService"):JSONDecode(readfile("CloverHub-settings.json"))
+        local path=runtime.settingsPath
+        if not isfile(path) then path="CloverHub-settings.json" end
+        if not isfile(path) then return nil end
+        return game:GetService("HttpService"):JSONDecode(readfile(path))
     end)
-    if ok and type(data)=="table" then
+    if ok and type(data)=="table" and (data.UserId==nil or data.UserId==player.UserId) then
         if type(data.Controls)=="table" then runtime.controls=data.Controls end
         if type(data.Hub)=="table" then for key,value in pairs(data.Hub) do
             if runtime.config[key]~=nil and type(value)==type(runtime.config[key]) then runtime.config[key]=value end
@@ -5758,7 +6792,7 @@ for _,name in ipairs({"VampireFarmConfig","CloverJungleConfig","CloverArcaneConf
     local cfg=type(env[name])=="table" and env[name] or {}; env[name]=cfg
     for _,key in ipairs({"Enabled","BossFarmEnabled","ApexFarmEnabled","PrimeApexFarmEnabled","GolemFarmEnabled",
         "AutoChestLootEnabled","AutoAttachEnabled","AutoResetEnabled","MobFarm","BossFarm","ApexFarm","PrimeApexFarm",
-        "KaldrisAirDodgeEnabled","AutoStartBoss","AutoAttach","AutoSkill","AutoSkillEnabled","AIBreakerEnabled","AIBreaker"}) do cfg[key]=false end
+        "KrakenFarmEnabled","OreFarmEnabled","AutoSkillResetAtLowMana","AutoInvitePlayersEnabled","AutoAcceptPartyInvitesEnabled","AutoStatEnabled","AutoStat","KaldrisAirDodgeEnabled","AutoStartBoss","AutoAttach","AutoSkill","AutoSkillEnabled","AIBreakerEnabled","AIBreaker"}) do cfg[key]=false end
     if name=="VampireFarmConfig" then cfg.FarmMode="Off" end
 end
 for key in pairs(runtime.controls) do
