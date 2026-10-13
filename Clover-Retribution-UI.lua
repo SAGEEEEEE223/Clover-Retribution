@@ -817,8 +817,9 @@ function runtime.configureUI(library,window,toggles,options)
     settings:AddButton("Replay startup animation",function() library:PlayEntrance() end)
     settings:AddButton("Print diagnostics",function()
         local data=runtime.telemetry and runtime.telemetry() or {}
-        print("[CloverHub] profile="..tostring(runtime.profile).." detected="..runtime.detect().." target="..tostring(data.Target)
-            .." mana="..tostring(runtime.mana()).." paused="..tostring(runtime.paused).." place="..game.PlaceId)
+        print("[CloverHub] profile="..tostring(runtime.profile).." detected="..runtime.detect().." target="..tostring(data.Model and data.Model.Name or data.Target)
+            .." mana="..tostring(runtime.mana()).." paused="..tostring(runtime.paused).." teleportPaused="..tostring(data.TeleportPaused)
+            .." mode="..tostring(data.FarmMode).." bossEnabled="..tostring(data.BossEnabled).." M1="..tostring(runtime.config.AutoM1).." place="..game.PlaceId)
         for _,name in ipairs({"fireproximityprompt","readfile","writefile","isnetworkowner"}) do print("[CloverHub] "..name.."="..type(env[name])) end
     end)
     local annotations={}
@@ -1464,6 +1465,7 @@ kaldrisBox:AddToggle("KaldrisCombat",{Text="Fight spawned Kaldris only",Default=
 Toggles.KaldrisCombat:OnChanged(function(enabled)
     -- OnChanged runs immediately while later controls are still being constructed.
     if not Options.BossTargets or not Toggles.BossFarmEnabled then return end
+    if enabled then teleportPaused=false; runtime.paused=false end
     if Toggles.VampireFarmEnabled then Toggles.VampireFarmEnabled:SetValue(false) end
     if Toggles.MobFarmEnabled then Toggles.MobFarmEnabled:SetValue(false) end
     for _,id in ipairs({"ApexFarmEnabled","PrimeApexFarmEnabled","GolemFarmEnabled","AutoChestLootEnabled"}) do
@@ -1591,6 +1593,7 @@ bossBox:AddToggle("BossFarmEnabled", {
 })
 Toggles.BossFarmEnabled:OnChanged(function(enabled)
     if enabled then
+        teleportPaused=false; runtime.paused=false
         runtime.config.AutoM1=true
         if runtime.sharedToggles and runtime.sharedToggles.HubM1 then runtime.sharedToggles.HubM1:SetValue(true) end
         env.VampireFarmConfig.AutoAttachEnabled=true
@@ -1912,6 +1915,7 @@ local syncingMode = false
 local function setFarmMode(mode)
     if activeMode == mode then return end
     if mode~="Off" then
+        teleportPaused=false; runtime.paused=false
         runtime.config.AutoM1=true
         if runtime.sharedToggles and runtime.sharedToggles.HubM1 then runtime.sharedToggles.HubM1:SetValue(true) end
         env.VampireFarmConfig.AutoAttachEnabled=true
@@ -3687,7 +3691,8 @@ task.spawn(function()
 end)
 golem.HUD=runtime.hud
 runtime.telemetry=function()
-    return {Model=target,Skills=env.VampireFarmConfig.AutoSkillEnabled and "Enabled" or "Off"}
+    return {Model=target,Skills=env.VampireFarmConfig.AutoSkillEnabled and "Enabled" or "Off",
+        TeleportPaused=teleportPaused,FarmMode=activeMode,BossEnabled=env.VampireFarmConfig.BossFarmEnabled}
 end
 local function updateTarget(fromPosition)
     local primeApex
