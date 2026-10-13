@@ -1590,6 +1590,12 @@ bossBox:AddToggle("BossFarmEnabled", {
     Tooltip = "Interrupts the current farm for any live listed boss, then resumes it.",
 })
 Toggles.BossFarmEnabled:OnChanged(function(enabled)
+    if enabled then
+        runtime.config.AutoM1=true
+        if runtime.sharedToggles and runtime.sharedToggles.HubM1 then runtime.sharedToggles.HubM1:SetValue(true) end
+        env.VampireFarmConfig.AutoAttachEnabled=true
+        if Toggles.AutoAttachEnabled then Toggles.AutoAttachEnabled:SetValue(true) end
+    end
     env.VampireFarmConfig.BossFarmEnabled = enabled
     if not enabled and targetSource == "Boss" then
         bossTarget = nil
@@ -1905,6 +1911,12 @@ aiBreakerBox:AddLabel("Runs only while Auto Attach has a live target.", true)
 local syncingMode = false
 local function setFarmMode(mode)
     if activeMode == mode then return end
+    if mode~="Off" then
+        runtime.config.AutoM1=true
+        if runtime.sharedToggles and runtime.sharedToggles.HubM1 then runtime.sharedToggles.HubM1:SetValue(true) end
+        env.VampireFarmConfig.AutoAttachEnabled=true
+        if Toggles.AutoAttachEnabled then Toggles.AutoAttachEnabled:SetValue(true) end
+    end
     activeMode = mode
     env.VampireFarmConfig.FarmMode = mode
     if not bossTarget and not apexTarget then
@@ -3154,10 +3166,11 @@ local function goToSelectedMobSpawn(root)
     if os.clock() < nextMobSpawnAt then return end
     local candidates = {}
     for name, selected in pairs(env.VampireFarmConfig.SelectedMobs) do
-        if selected and MOB_NAMES[name] then
+        if selected then
             local chosenName = env.VampireFarmConfig.MobSpawnOverrides[name]
                 or MOB_SPAWN_NAMES[name]
-            local chosenSpawn = chosenName and spawns:FindFirstChild(chosenName)
+            local chosenSpawn = chosenName and spawns:FindFirstChild(chosenName,true)
+            if chosenSpawn and not chosenSpawn:IsA("BasePart") then chosenSpawn=runtime.getRoot(chosenSpawn) end
             if chosenSpawn and chosenSpawn:IsA("BasePart") then
                 table.insert(candidates, {
                     Name = name,
