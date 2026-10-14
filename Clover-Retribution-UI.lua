@@ -5295,7 +5295,42 @@ local function killThreshold(kind)
 end
 
 local function tryLocalKill(model, kind)
-    return false -- Normal combat remains active until live target tracking reports death.
+    local function skip(reason) config.LastKillStatus=reason; return false end
+    if not running or paused or not runtime.allowCombat() then return skip("Farm paused") end
+    if not config.InstantKill then return skip("Instant kill is off") end
+    if not model or model~=target or not enemyModel(model) then return skip("No live farm target") end
+    if runtime.blocked(model) then return skip("Target is in a protected phase") end
+    local humanoid=model:FindFirstChildOfClass("Humanoid")
+    local root=rootOf(model)
+    if not humanoid or not root or humanoid.MaxHealth<=0 then return skip("Target health unavailable") end
+    local threshold=tonumber(killThreshold(kind))
+    if not threshold or threshold~=threshold then return skip("Invalid HP threshold") end
+    threshold=math.clamp(threshold,0,100)
+    if humanoid.Health/humanoid.MaxHealth*100>threshold then return skip("Target is above its HP threshold") end
+    if type(isnetworkowner)~="function" then return skip("Executor ownership check unavailable") end
+    local checked,owned=pcall(isnetworkowner,root)
+    if not checked or not owned then return skip("Client does not own target physics") end
+    local record=lastKillAttempt[model]
+    if record and record.Count>=3 then return skip("Three unconfirmed attempts; normal combat continues") end
+    if record and os.clock()-record.Time<5 then return skip("Waiting before next attempt") end
+    record={Count=record and record.Count+1 or 1,Time=os.clock()}
+    lastKillAttempt[model]=record
+    local previousHealth=humanoid.Health
+    local ok,err=pcall(function()
+        if config.InstantKillMethod=="Dead state" then humanoid:ChangeState(Enum.HumanoidStateType.Dead)
+        else humanoid.Health=0 end
+    end)
+    if not ok then return skip("Attempt failed: "..tostring(err)) end
+    config.LastKillStatus="Local attempt sent; server result unverified"
+    warn("[JungleKill] "..model.Name..": "..config.LastKillStatus)
+    task.delay(.5,function()
+        if not running or not model.Parent or not humanoid.Parent or model:GetAttribute("Dead")==true then return end
+        if humanoid.Health<=0 then
+            pcall(function() humanoid.Health=previousHealth end)
+            config.LastKillStatus="No replicated death marker; continuing normal combat"
+        end
+    end)
+    return false -- A local state change is not proof of a server-confirmed kill.
 end
 local function availableSkills()
     local result = {}
@@ -5607,9 +5642,15 @@ end)
 specialBox:AddLabel("Prime Apex > Apex > selected bosses > mobs.", true)
 
 attackBox:AddToggle("JungleInstantKill", {
-    Text = "Finish with normal combat", Default = config.InstantKill,
+    Text = "Instant kill attempt", Default = config.InstantKill,
 })
 Toggles.JungleInstantKill:OnChanged(function(v) config.InstantKill = v end)
+attackBox:AddDropdown("JungleKillMethod",{Text="Instant kill method",Values={"Local health","Dead state"},Default=config.InstantKillMethod or "Local health"})
+Options.JungleKillMethod:OnChanged(function(value) config.InstantKillMethod=value end)
+attackBox:AddButton("Print instant-kill status",function()
+    print("[JungleKill] "..tostring(config.LastKillStatus or "Enable the toggle and acquire a selected farm target"))
+end)
+attackBox:AddLabel("Uses the target type's HP threshold and requires client physics ownership. Local attempts do not guarantee a server kill.",true)
 local function addThreshold(groupbox, id, label, field)
     groupbox:AddSlider(id, {
         Text = label, Default = config[field],
