@@ -1742,7 +1742,8 @@ kaldrisBox:AddButton("Print cycle diagnostics",function()
         local prompt=kaldrisCycle.prompt(kind)
         print("[KaldrisCycle] "..kind.."="..(prompt and prompt:GetFullName() or "not streamed / ambiguous").." cached="..tostring(kaldrisCycle[kind.."Position"]))
     end
-    local dialogue=playerGui:FindFirstChild("Dialogue")
+    local gui=player:FindFirstChildOfClass("PlayerGui")
+    local dialogue=gui and gui:FindFirstChild("Dialogue")
     if dialogue then
         for _,item in ipairs(dialogue:GetDescendants()) do
             if (item:IsA("TextLabel") or item:IsA("TextButton")) and kaldrisCycle.visible(item) then
@@ -5000,12 +5001,25 @@ function kaldrisCycle.dialogueChoice(stage)
     local found
     for button,label in pairs(buttons) do
         local matches=stage=="Open" and label=="im tired of my current self"
+            or stage=="Altar" and label=="press a cinder sigil into the altar"
             or stage=="Spins" and label=="if only i had a few more chances"
             or stage=="Confirm" and (label=="yes" or label=="confirm" or label=="im sure" or label=="i understand")
                 and (context:find("spin",1,true) or context:find("few more chances",1,true)) and context:find("reset",1,true)
         if matches then if found then return end; found=button end
     end
     return found
+end
+function kaldrisCycle.submitAltarChoice()
+    local button=kaldrisCycle.dialogueChoice("Altar")
+    if not button then return false end
+    if not golem.clickChoice(button) then
+        kaldrisCycle.status("Cinder Sigil choice visible; dialogue click API failed")
+        return false
+    end
+    kaldrisCycle.Phase="Summoning"; kaldrisCycle.SummonAt=os.clock()
+    kaldrisCycle.setCombat(true)
+    kaldrisCycle.status("Cinder Sigil choice selected; boss combat armed, waiting for Kaldris")
+    return true
 end
 function kaldrisCycle.prestige(root,level)
     kaldrisCycle.setCombat(false)
@@ -5083,16 +5097,23 @@ function kaldrisCycle.tick(character,humanoid,root)
         if os.clock()-kaldrisCycle.DeathAt<8 then kaldrisCycle.status("Checking boss defeat / phase transition"); return true end
         kaldrisCycle.disconnectBoss(); kaldrisCycle.resetFor("Altar",character,humanoid); return true
     end
-    kaldrisCycle.setCombat(false)
+    kaldrisCycle.setCombat(kaldrisCycle.Phase=="Summoning")
     if kaldrisCycle.Phase=="Summoning" then
-        if os.clock()-kaldrisCycle.SummonAt>90 then kaldrisCycle.halt("No Kaldris appeared after altar activation")
-        else kaldrisCycle.status("Altar activated; waiting for Kaldris") end
+        if os.clock()-kaldrisCycle.SummonAt>90 then kaldrisCycle.halt("No Kaldris appeared after selecting Cinder Sigil")
+        else kaldrisCycle.status("Cinder Sigil choice selected; boss combat armed, waiting for Kaldris") end
+        return true
+    end
+    if kaldrisCycle.submitAltarChoice() then return true end
+    if kaldrisCycle.Phase=="AltarDialogue" then
+        if os.clock()-kaldrisCycle.AltarOpenedAt>30 then
+            kaldrisCycle.halt("Cinder Sigil dialogue was not selected; print cycle diagnostics")
+        else kaldrisCycle.status("Altar dialogue opened; looking for the Cinder Sigil choice") end
         return true
     end
     local prompt=kaldrisCycle.travel("Altar",root)
     if prompt and kaldrisCycle.fire(prompt) then
-        kaldrisCycle.Phase="Summoning"; kaldrisCycle.SummonAt=os.clock()
-        kaldrisCycle.status("Altar activated once; waiting for Kaldris")
+        kaldrisCycle.Phase="AltarDialogue"; kaldrisCycle.AltarOpenedAt=os.clock()
+        kaldrisCycle.status("Altar prompt opened; selecting Cinder Sigil dialogue next")
     end
     return true
 end
