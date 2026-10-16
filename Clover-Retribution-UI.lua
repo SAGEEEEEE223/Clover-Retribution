@@ -1497,6 +1497,7 @@ end
 
 local running = true
 local teleportPaused = false
+local kaldrisCycle={Phase='Altar'}
 local activeMode = env.VampireFarmConfig.FarmMode
 local target
 local targetSource
@@ -1556,6 +1557,7 @@ env.StopVampireFarm = function()
     runtime.saveSettings()
     running = false
     runtime.kaldrisDodging=false
+    if kaldrisCycle.disconnectBoss then kaldrisCycle.disconnectBoss() end
     RunService:UnbindFromRenderStep(cameraBinding)
     restoreCamera()
     if radiusConnection then radiusConnection:Disconnect() end
@@ -1660,7 +1662,7 @@ end
 local kaldrisTab=Window:AddTab("Kaldris")
 local kaldrisBox=kaldrisTab:AddLeftGroupbox("Ashen Crucible")
 local kaldrisInfo=kaldrisTab:AddRightGroupbox("Cinder Sigils")
-kaldrisInfo:AddLabel("Farm starts OFF. Enable boss combat only when you are inside the Crucible. No Mage Apprentice or Vampire farm is enabled by this tab.",true)
+kaldrisInfo:AddLabel("Starts OFF. Enable the repeat cycle near the streamed Ember Altar. It summons once, fights Kaldris, resets after defeat and returns to the altar. Other mob farms stay off.",true)
 kaldrisInfo:AddLabel("Cinder Sigils: your item description lists fire mages and charred netherwings. Summoning consumes a sigil at the Ember Altar.",true)
 kaldrisBox:AddToggle("KaldrisCombat",{Text="Fight spawned Kaldris only",Default=false})
 Toggles.KaldrisCombat:OnChanged(function(enabled)
@@ -1703,12 +1705,58 @@ kaldrisBox:AddButton("Interact with nearby Ember Altar",function()
     local ok,err=pcall(fireproximityprompt,prompt)
     if not ok then warn("[Kaldris] Altar interaction failed: "..tostring(err)) end
 end)
+kaldrisBox:AddToggle("KaldrisAutoCycle",{Text="Auto summon / fight / reset / repeat",Default=false})
+kaldrisBox:AddToggle("KaldrisSpinPrestige",{Text="At level 200: prestige for spins and repeat",Default=true})
+kaldrisCycle.Label=kaldrisBox:AddLabel("Cycle off",true)
+Toggles.KaldrisAutoCycle:OnChanged(function(enabled)
+    if not kaldrisCycle.setCombat then return end
+    kaldrisCycle.disconnectBoss()
+    kaldrisCycle.Phase="Altar"; kaldrisCycle.ResetCharacter=nil; kaldrisCycle.AfterReset=nil
+    kaldrisCycle.PrestigeLevel=nil; kaldrisCycle.DialogueStage=nil; kaldrisCycle.Recovering=nil
+    if enabled then
+        teleportPaused=false; runtime.paused=false
+        -- Enter the exclusive boss route first to disable every competing farm.
+        kaldrisCycle.setCombat(true); kaldrisCycle.setCombat(false)
+        kaldrisCycle.prompt("Altar"); kaldrisCycle.prompt("Wizard")
+        if Toggles.VampireAutoSkill then Toggles.VampireAutoSkill:SetValue(true) end
+        runtime.config.AutoReset=false; runtime.config.AutoStaminaReset=false
+        if runtime.sharedToggles then
+            for _,id in ipairs({"HubReset","HubStaminaReset"}) do
+                if runtime.sharedToggles[id] then runtime.sharedToggles[id]:SetValue(false) end
+            end
+        end
+        env.VampireFarmConfig.AutoResetEnabled=false
+        if Toggles.CloverAutoReset then Toggles.CloverAutoReset:SetValue(false) end
+        if Toggles.VampireAutoSkillResetAtLowMana then Toggles.VampireAutoSkillResetAtLowMana:SetValue(false) end
+        kaldrisCycle.status("Cycle enabled; checking level and altar")
+    else
+        kaldrisCycle.setCombat(false)
+        if Toggles.VampireAutoSkill then Toggles.VampireAutoSkill:SetValue(false) end
+        kaldrisCycle.status("Cycle off")
+    end
+end)
+kaldrisBox:AddButton("Print cycle diagnostics",function()
+    if not kaldrisCycle.level then return end
+    print("[KaldrisCycle] phase="..tostring(kaldrisCycle.Phase).." level="..tostring(kaldrisCycle.level()))
+    for _,kind in ipairs({"Altar","Wizard"}) do
+        local prompt=kaldrisCycle.prompt(kind)
+        print("[KaldrisCycle] "..kind.."="..(prompt and prompt:GetFullName() or "not streamed / ambiguous").." cached="..tostring(kaldrisCycle[kind.."Position"]))
+    end
+    local dialogue=playerGui:FindFirstChild("Dialogue")
+    if dialogue then
+        for _,item in ipairs(dialogue:GetDescendants()) do
+            if (item:IsA("TextLabel") or item:IsA("TextButton")) and kaldrisCycle.visible(item) then
+                print("[KaldrisDialogue] "..item:GetFullName().." | "..item.Text)
+            end
+        end
+    end
+end)
 kaldrisBox:AddToggle("KaldrisAirDodge",{Text="Aerial dodge on visible casting signal",Default=false})
 Toggles.KaldrisAirDodge:OnChanged(function(value) env.VampireFarmConfig.KaldrisAirDodgeEnabled=value end)
 kaldrisBox:AddSlider("KaldrisDodgeHeight",{Text="Dodge height (studs)",Default=30,Min=10,Max=70,Rounding=0})
 Options.KaldrisDodgeHeight:OnChanged(function(value) env.VampireFarmConfig.KaldrisDodgeHeight=value end)
 kaldrisInfo:AddLabel("Aerial dodge requires Kaldris to expose a Casting BoolValue or boolean Casting attribute. It cannot predict unreported attacks or guarantee immunity.",true)
-kaldrisInfo:AddLabel("The altar button only interacts while nearby. It does not teleport you or automatically spend repeated sigils. Boss phase handling still needs live testing.",true)
+kaldrisInfo:AddLabel("Repeat cycle spends one sigil per summon. At level 200 it resets, visits the streamed Wizard King and selects spin prestige. A detected level reset resumes the altar route. Missing routes, unknown dialogue or unconfirmed summons pause the cycle.",true)
 local uiTab = Window:AddTab("Settings")
 local combatBox = farmTab:AddLeftGroupbox("Combat")
 local statBox = farmTab:AddRightGroupbox("Stats")
@@ -4096,6 +4144,7 @@ combatBox:AddButton("Print instant-kill status", function()
     golem.reportKillGate(target, reason, true)
 end)
 local function tryOwnedMobLocalKill(model)
+    if Toggles.KaldrisAutoCycle.Value and model and model.Name=="Kaldris" then return false end
     local reason,humanoid=golem.inspectKill(model)
     if not humanoid then return false end
     local previous=humanoid.Health
@@ -4811,6 +4860,243 @@ silentAim.CheckManaReset = function(character)
     return true
 end
 
+-- Kaldris cycle: one prompt per summon, confirmed defeat, reset, altar, spin prestige.
+function kaldrisCycle.status(message)
+    if kaldrisCycle.Message==message then return end
+    kaldrisCycle.Message=message
+    if kaldrisCycle.Label then kaldrisCycle.Label:SetText(message) end
+    print("[KaldrisCycle] "..message)
+end
+function kaldrisCycle.setCombat(enabled)
+    if Toggles.KaldrisCombat.Value~=enabled then Toggles.KaldrisCombat:SetValue(enabled) end
+    if not enabled then target,targetSource,bossTarget=nil,nil,nil end
+end
+function kaldrisCycle.level()
+    local character=player.Character
+    local status=character and character:FindFirstChild("Status")
+    local containers={player,character,status,status and status:FindFirstChild("Replicated"),player:FindFirstChild("leaderstats"),player:FindFirstChild("Data")}
+    for _,container in pairs(containers) do
+        local value=container:GetAttribute("Level")
+        local child=container:FindFirstChild("Level")
+        if child and (child:IsA("IntValue") or child:IsA("NumberValue")) then value=child.Value end
+        if type(value)=="number" and value==value and value>=0 and value<math.huge then return math.floor(value) end
+    end
+end
+function kaldrisCycle.findBoss()
+    for _,model in ipairs(enemies:GetDescendants()) do
+        if model:IsA("Model") and model.Name=="Kaldris" and aliveModel(model) then return model end
+    end
+    for model in pairs(bossCandidates) do
+        if model.Name=="Kaldris" and runtime.isEnemy(model) and aliveModel(model) then return model end
+    end
+end
+function kaldrisCycle.prompt(kind)
+    local cached=kaldrisCycle[kind.."Prompt"]
+    if cached and cached:IsDescendantOf(workspace) then return cached end
+    local candidates={}
+    for _,prompt in ipairs(workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") then
+            local node=prompt.Parent
+            while node and node~=workspace do
+                local name=node.Name:lower():gsub("[^%w]", "")
+                if (kind=="Altar" and name=="emberaltar")
+                    or (kind=="Wizard" and (name=="fabio" or name=="wizardking" or name=="wizzardking" or name:match("^fabiowizardking"))) then
+                    table.insert(candidates,prompt); break
+                end
+                node=node.Parent
+            end
+        end
+    end
+    if #candidates==1 then
+        cached=candidates[1]; kaldrisCycle[kind.."Prompt"]=cached
+        local part=cached.Parent
+        if part:IsA("Attachment") then part=part.Parent end
+        if part:IsA("BasePart") then kaldrisCycle[kind.."Position"]=part.Position end
+        return cached
+    end
+end
+function kaldrisCycle.travel(kind,root)
+    local prompt=kaldrisCycle.prompt(kind)
+    local part=prompt and prompt.Parent
+    if part and part:IsA("Attachment") then part=part.Parent end
+    if not part or not part:IsA("BasePart") then
+        local position=kaldrisCycle[kind.."Position"]
+        if position and os.clock()-(kaldrisCycle.LastStream or -math.huge)>5 then
+            kaldrisCycle.LastStream=os.clock()
+            root.CFrame=CFrame.new(position+Vector3.new(0,3,3))
+            task.spawn(function() pcall(function() player:RequestStreamAroundAsync(position,3) end) end)
+        end
+        kaldrisCycle.status(kind.." prompt unavailable; move near it once to load the route")
+        return
+    end
+    kaldrisCycle[kind.."Position"]=part.Position
+    if not prompt.Enabled then kaldrisCycle.status(kind.." prompt is disabled; waiting"); return end
+    local range=math.min(5,math.max(1,prompt.MaxActivationDistance*.5))
+    if (root.Position-part.Position).Magnitude>range then
+        root.AssemblyLinearVelocity=Vector3.zero
+        root.AssemblyAngularVelocity=Vector3.zero
+        root.CFrame=CFrame.new(part.Position+Vector3.new(0,1,range*.5))
+        kaldrisCycle.status("Returning to "..kind); return
+    end
+    return prompt
+end
+function kaldrisCycle.fire(prompt)
+    if type(fireproximityprompt)~="function" then kaldrisCycle.status("Prompt API unavailable"); return false end
+    local ok,err=pcall(fireproximityprompt,prompt,math.max(0,prompt.HoldDuration))
+    if not ok then kaldrisCycle.status("Prompt failed: "..tostring(err)) end
+    return ok
+end
+function kaldrisCycle.disconnectBoss()
+    if kaldrisCycle.DeathConnection then kaldrisCycle.DeathConnection:Disconnect() end
+    kaldrisCycle.DeathConnection=nil
+    kaldrisCycle.Boss=nil; kaldrisCycle.DeathAt=nil
+end
+function kaldrisCycle.watchBoss(boss)
+    if kaldrisCycle.Boss==boss then kaldrisCycle.DeathAt=nil; return end
+    kaldrisCycle.disconnectBoss()
+    kaldrisCycle.Boss=boss
+    local humanoid=boss:FindFirstChildOfClass("Humanoid")
+    if humanoid then kaldrisCycle.DeathConnection=humanoid.Died:Connect(function()
+        if kaldrisCycle.Boss==boss then kaldrisCycle.DeathAt=os.clock() end
+    end) end
+end
+function kaldrisCycle.resetFor(nextPhase,character,humanoid)
+    kaldrisCycle.setCombat(false)
+    kaldrisCycle.ResetCharacter=character
+    kaldrisCycle.AfterReset=nextPhase
+    kaldrisCycle.Phase="Resetting"
+    kaldrisCycle.status("Resetting character, then returning to "..(nextPhase=="Prestige" and "Wizard King" or "altar"))
+    local ok,err=pcall(function() humanoid.Health=0 end)
+    if not ok then kaldrisCycle.halt("Reset failed: "..tostring(err)) end
+end
+function kaldrisCycle.halt(reason)
+    kaldrisCycle.setCombat(false)
+    if Toggles.VampireAutoSkill then Toggles.VampireAutoSkill:SetValue(false) end
+    kaldrisCycle.Phase="Stopped"
+    kaldrisCycle.status(reason.."; toggle the cycle off/on to retry")
+end
+function kaldrisCycle.visible(button)
+    local node=button
+    while node and node~=playerGui do
+        if node:IsA("GuiObject") and not node.Visible then return false end
+        if node:IsA("ScreenGui") and not node.Enabled then return false end
+        node=node.Parent
+    end
+    return node==playerGui
+end
+function kaldrisCycle.dialogueChoice(stage)
+    local dialogue=playerGui:FindFirstChild("Dialogue")
+    if not dialogue or not dialogue:IsA("ScreenGui") or not dialogue.Enabled then return end
+    local text,buttons={},{}
+    for _,object in ipairs(dialogue:GetDescendants()) do
+        if (object:IsA("TextLabel") or object:IsA("TextButton")) and kaldrisCycle.visible(object) then
+            local normalized=object.Text:lower():gsub("<[^>]+>", ""):gsub("[^%w%s]", ""):gsub("%s+", " "):match("^%s*(.-)%s*$")
+            table.insert(text,normalized)
+            local button=object:IsA("GuiButton") and object or object:FindFirstAncestorWhichIsA("GuiButton")
+            if button then buttons[button]=normalized end
+        end
+    end
+    local context=table.concat(text," ")
+    local found
+    for button,label in pairs(buttons) do
+        local matches=stage=="Open" and label=="im tired of my current self"
+            or stage=="Spins" and label=="if only i had a few more chances"
+            or stage=="Confirm" and (label=="yes" or label=="confirm" or label=="im sure" or label=="i understand")
+                and (context:find("spin",1,true) or context:find("few more chances",1,true)) and context:find("reset",1,true)
+        if matches then if found then return end; found=button end
+    end
+    return found
+end
+function kaldrisCycle.prestige(root,level)
+    kaldrisCycle.setCombat(false)
+    if kaldrisCycle.PrestigeLevel and level<=5 and level<kaldrisCycle.PrestigeLevel then
+        kaldrisCycle.PrestigeLevel=nil; kaldrisCycle.DialogueStage=nil
+        kaldrisCycle.Phase="Altar"; kaldrisCycle.status("Spin prestige level reset detected; returning to altar"); return
+    end
+    local now=os.clock()
+    if not kaldrisCycle.DialogueStage then
+        local prompt=kaldrisCycle.travel("Wizard",root)
+        if not prompt then return end
+        if now-(kaldrisCycle.LastWizardPrompt or -math.huge)<5 then return end
+        if kaldrisCycle.fire(prompt) then
+            kaldrisCycle.LastWizardPrompt=now; kaldrisCycle.DialogueStage="Open"; kaldrisCycle.DialogueAt=now
+            kaldrisCycle.PrestigeLevel=level
+        end
+        return
+    end
+    if kaldrisCycle.WizardPosition and (root.Position-kaldrisCycle.WizardPosition).Magnitude>12 then
+        kaldrisCycle.halt("Moved away from Wizard King during prestige"); return
+    end
+    if now-kaldrisCycle.DialogueAt>30 then kaldrisCycle.halt("Prestige was not confirmed; unknown dialogue or requirements"); return end
+    if now-(kaldrisCycle.LastChoice or -math.huge)<1 then return end
+    local stage=kaldrisCycle.DialogueStage
+    -- Some versions open the prestige choices directly.
+    local button=kaldrisCycle.dialogueChoice(stage)
+    if not button and stage=="Open" then button=kaldrisCycle.dialogueChoice("Spins"); if button then stage="Spins" end end
+    if button and golem.clickChoice(button) then
+        kaldrisCycle.LastChoice=now
+        kaldrisCycle.DialogueStage=stage=="Open" and "Spins" or stage=="Spins" and "Confirm" or "AwaitLevel"
+        kaldrisCycle.status(stage=="Spins" and "Spin prestige selected; verifying level reset" or "Wizard King dialogue: "..kaldrisCycle.DialogueStage)
+    end
+end
+function kaldrisCycle.tick(character,humanoid,root)
+    if not Toggles.KaldrisAutoCycle.Value then return false end
+    if kaldrisCycle.Phase=="Stopped" then kaldrisCycle.setCombat(false); return true end
+    if runtime.paused then kaldrisCycle.status("Cycle paused"); return true end
+    local level=kaldrisCycle.level()
+    if not level then kaldrisCycle.setCombat(false); kaldrisCycle.status("Level unavailable; cycle paused"); return true end
+    if kaldrisCycle.Phase=="Resetting" then
+        if character and character~=kaldrisCycle.ResetCharacter and humanoid and humanoid.Health>0 and root then
+            kaldrisCycle.ResetCharacter=nil; kaldrisCycle.Phase=kaldrisCycle.AfterReset
+            kaldrisCycle.AfterReset=nil
+        else return true end
+    end
+    if not (humanoid and humanoid.Health>0 and root) then
+        kaldrisCycle.setCombat(false)
+        kaldrisCycle.Recovering=true
+        kaldrisCycle.status("Character resetting; return route resumes when character exists"); return true
+    end
+    if kaldrisCycle.Recovering then
+        kaldrisCycle.Recovering=nil; kaldrisCycle.disconnectBoss(); kaldrisCycle.Phase="Altar"
+    end
+    if kaldrisCycle.Phase=="Prestige" then kaldrisCycle.prestige(root,level); return true end
+    if level>=200 then
+        kaldrisCycle.disconnectBoss()
+        if not Toggles.KaldrisSpinPrestige.Value then kaldrisCycle.halt("Reached level "..level); return true end
+        kaldrisCycle.resetFor("Prestige",character,humanoid); return true
+    end
+    local boss=kaldrisCycle.findBoss()
+    if boss then
+        kaldrisCycle.watchBoss(boss); kaldrisCycle.Phase="Fighting"
+        kaldrisCycle.setCombat(true); kaldrisCycle.status("Fighting Kaldris | Level "..level.." / 200")
+        return false
+    end
+    if kaldrisCycle.Phase=="Fighting" then
+        kaldrisCycle.setCombat(false)
+        local previous=kaldrisCycle.Boss
+        local health=previous and previous:FindFirstChildOfClass("Humanoid")
+        if previous and (previous:GetAttribute("Dead")==true or health and health.Health<=0) then kaldrisCycle.DeathAt=kaldrisCycle.DeathAt or os.clock() end
+        if not kaldrisCycle.DeathAt then
+            kaldrisCycle.status("Kaldris disappeared without a death signal; waiting for phase or defeat")
+            return true
+        end
+        if os.clock()-kaldrisCycle.DeathAt<8 then kaldrisCycle.status("Checking boss defeat / phase transition"); return true end
+        kaldrisCycle.disconnectBoss(); kaldrisCycle.resetFor("Altar",character,humanoid); return true
+    end
+    kaldrisCycle.setCombat(false)
+    if kaldrisCycle.Phase=="Summoning" then
+        if os.clock()-kaldrisCycle.SummonAt>90 then kaldrisCycle.halt("No Kaldris appeared after altar activation")
+        else kaldrisCycle.status("Altar activated; waiting for Kaldris") end
+        return true
+    end
+    local prompt=kaldrisCycle.travel("Altar",root)
+    if prompt and kaldrisCycle.fire(prompt) then
+        kaldrisCycle.Phase="Summoning"; kaldrisCycle.SummonAt=os.clock()
+        kaldrisCycle.status("Altar activated once; waiting for Kaldris")
+    end
+    return true
+end
+
 silentAim.BindManaReset = function(character)
     if silentAim.ManaChangedConnection then silentAim.ManaChangedConnection:Disconnect() end
     if silentAim.LoadedChangedConnection then silentAim.LoadedChangedConnection:Disconnect() end
@@ -4835,7 +5121,9 @@ while running do
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     local myRoot = getRoot(character)
 
-    if not (humanoid and humanoid.Health > 0 and myRoot) then
+    if kaldrisCycle.tick(character,humanoid,myRoot) then
+        task.wait(0.1)
+    elseif not (humanoid and humanoid.Health > 0 and myRoot) then
         target = nil
         targetSource = nil
         task.wait(0.1)

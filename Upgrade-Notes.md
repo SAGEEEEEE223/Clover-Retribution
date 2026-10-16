@@ -12,7 +12,11 @@ Merged the complete supplied world-farming script into the existing hub. The ani
 - Account-specific settings files with migration from the old hub settings file.
 
 ## Kaldris
-Enable Kaldris > Fight spawned Kaldris only inside the Ashen Crucible. This disables other farm routes. It looks for the live Kaldris model and waits in place if absent; it does not travel to mob camps or the altar. Aerial dodge still depends on a visible Casting signal and needs live validation.
+Kaldris > Auto summon / fight / reset / repeat starts OFF. Enabling it disables competing farm routes, enables existing selected auto skills, travels to a discovered Ember Altar prompt and activates it once. A live Kaldris takes priority. After a death signal and an eight-second phase check, the character resets; the altar route resumes as soon as the new living character exists, with no extra respawn timer. Unexpected despawns wait for a phase or death signal. An unconfirmed summon stops after 90 seconds instead of spending more sigils.
+
+At level 200 or higher, the enabled spin-prestige option interrupts the boss cycle, resets, travels to the discovered Wizard King/Fabio prompt and chooses the visible spin-prestige dialogue. Only the matching prestige/spin choices are automated; a generic confirmation additionally requires visible spin/reset context. A detected new level of 0–5 resumes the altar cycle. Unknown dialogue or unconfirmed prestige stops the loop. Turning spin prestige off stops the cycle at level 200 instead.
+
+The altar and Wizard King must be streamed to discover their positions. Positions remain cached for this script session and are used to return and request streaming. Unknown locations are not guessed. Print cycle diagnostics reports route, level and visible dialogue details. The sequence has mocked state-transition tests and compiles, but live NPC dialogue, boss phase timing and server-side reset/summon behavior still need validation. Aerial dodge depends on a visible Casting signal.
 
 ## Startup and pause
 Every execution starts with farming, automatic attacks, automatic skills, collection, resets and party invitations off. Target selections and thresholds persist. Manually enabling combat clears a stale teleport pause. The pause control also gates the new skill and movement paths.
