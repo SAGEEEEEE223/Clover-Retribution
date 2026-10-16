@@ -1712,6 +1712,7 @@ Toggles.KaldrisAutoCycle:OnChanged(function(enabled)
     if not kaldrisCycle.setCombat then return end
     kaldrisCycle.disconnectBoss()
     kaldrisCycle.Phase="Altar"; kaldrisCycle.ResetCharacter=nil; kaldrisCycle.AfterReset=nil
+    kaldrisCycle.AltarClickedButton=nil
     kaldrisCycle.PrestigeLevel=nil; kaldrisCycle.DialogueStage=nil; kaldrisCycle.Recovering=nil
     if enabled then
         teleportPaused=false; runtime.paused=false
@@ -1719,6 +1720,8 @@ Toggles.KaldrisAutoCycle:OnChanged(function(enabled)
         kaldrisCycle.setCombat(true); kaldrisCycle.setCombat(false)
         kaldrisCycle.prompt("Altar"); kaldrisCycle.prompt("Wizard")
         if Toggles.VampireAutoSkill then Toggles.VampireAutoSkill:SetValue(true) end
+        kaldrisCycle.ConfigureAt=nil
+        if kaldrisCycle.configureCombat then kaldrisCycle.configureCombat() end
         runtime.config.AutoReset=false; runtime.config.AutoStaminaReset=false
         if runtime.sharedToggles then
             for _,id in ipairs({"HubReset","HubStaminaReset"}) do
@@ -4868,6 +4871,27 @@ function kaldrisCycle.status(message)
     if kaldrisCycle.Label then kaldrisCycle.Label:SetText(message) end
     print("[KaldrisCycle] "..message)
 end
+function kaldrisCycle.configureCombat()
+    if os.clock()-(kaldrisCycle.ConfigureAt or -math.huge)<2 then return end
+    kaldrisCycle.ConfigureAt=os.clock()
+    for id,value in pairs({VampireAutoEquipWeapon=true,VampireAutoSkill=true,VampireSilentAim=true,
+        VampireAutoSkillManaGate=false,KaldrisAirDodge=true}) do
+        local control=Toggles[id]
+        if control and control.Value~=value then control:SetValue(value) end
+    end
+    runtime.config.ManaRest=false
+    if runtime.sharedToggles and runtime.sharedToggles.HubManaRest then runtime.sharedToggles.HubManaRest:SetValue(false) end
+    local changed=false
+    for _,skill in ipairs(getAvailableSkills()) do
+        if not env.VampireFarmConfig.SelectedSkills[skill.Key] then
+            env.VampireFarmConfig.SelectedSkills[skill.Key]=true; changed=true
+        end
+    end
+    if changed then
+        -- Force the visible picker to reflect automatic selections as well.
+        skillSignature=""; refreshSkillPicker()
+    end
+end
 function kaldrisCycle.setCombat(enabled)
     if Toggles.KaldrisCombat.Value~=enabled then Toggles.KaldrisCombat:SetValue(enabled) end
     if not enabled then target,targetSource,bossTarget=nil,nil,nil end
@@ -4963,6 +4987,7 @@ function kaldrisCycle.watchBoss(boss)
 end
 function kaldrisCycle.resetFor(nextPhase,character,humanoid)
     kaldrisCycle.setCombat(false)
+    kaldrisCycle.AltarClickedButton=nil
     kaldrisCycle.ResetCharacter=character
     kaldrisCycle.AfterReset=nextPhase
     kaldrisCycle.Phase="Resetting"
@@ -4986,40 +5011,94 @@ function kaldrisCycle.visible(button)
     return node==playerGui
 end
 function kaldrisCycle.dialogueChoice(stage)
-    local dialogue=playerGui:FindFirstChild("Dialogue")
-    if not dialogue or not dialogue:IsA("ScreenGui") or not dialogue.Enabled then return end
     local text,buttons={},{}
-    for _,object in ipairs(dialogue:GetDescendants()) do
+    for _,object in ipairs(playerGui:GetDescendants()) do
         if (object:IsA("TextLabel") or object:IsA("TextButton")) and kaldrisCycle.visible(object) then
+            local screen=object:FindFirstAncestorOfClass("ScreenGui")
+            if screen and (screen.Name=="CloverDashboard" or screen.Name=="CloverBoot") then continue end
             local normalized=object.Text:lower():gsub("<[^>]+>", ""):gsub("[^%w%s]", ""):gsub("%s+", " "):match("^%s*(.-)%s*$")
             table.insert(text,normalized)
             local button=object:IsA("GuiButton") and object or object:FindFirstAncestorWhichIsA("GuiButton")
-            if button then buttons[button]=normalized end
+            -- Labels can live beside an ImageButton rather than inside it.
+            buttons[object]={Text=normalized,Target=button or object}
         end
     end
     local context=table.concat(text," ")
     local found
-    for button,label in pairs(buttons) do
+    for _,entry in pairs(buttons) do
+        local button,label=entry.Target,entry.Text
         local matches=stage=="Open" and label=="im tired of my current self"
             or stage=="Altar" and label=="press a cinder sigil into the altar"
             or stage=="Spins" and label=="if only i had a few more chances"
             or stage=="Confirm" and (label=="yes" or label=="confirm" or label=="im sure" or label=="i understand")
                 and (context:find("spin",1,true) or context:find("few more chances",1,true)) and context:find("reset",1,true)
-        if matches then if found then return end; found=button end
+        if matches then if found and found~=button then return end; found=button end
     end
     return found
+end
+function kaldrisCycle.clickDialogueChoice(button)
+    if not button or not kaldrisCycle.visible(button) then return false end
+    local position,size=button.AbsolutePosition,button.AbsoluteSize
+    if not position or not size or size.X<=0 or size.Y<=0 then return false end
+    local screen=button:FindFirstAncestorOfClass("ScreenGui")
+    local inset=game:GetService("GuiService"):GetGuiInset()
+    local x=position.X+size.X*.5
+    local rawY=position.Y+size.Y*.5
+    local y=rawY+(screen and not screen.IgnoreGuiInset and inset.Y or 0)
+    local function hitsChoice(atY)
+        for _,item in ipairs(playerGui:GetGuiObjectsAtPosition(x,atY)) do
+            if item==button or item:IsDescendantOf(button) then return true end
+        end
+        return false
+    end
+    if not hitsChoice(y) then
+        if y~=rawY and hitsChoice(rawY) then y=rawY
+        else kaldrisCycle.status("Dialogue choice has no matching screen hit target"); return false end
+    end
+    -- Send a normal pointer click: synthetic signals can return successfully
+    -- without invoking the game's actual GUI input handling.
+    for _,item in ipairs(playerGui:GetGuiObjectsAtPosition(x,y)) do
+        local owner=item:FindFirstAncestorOfClass("ScreenGui")
+        if owner and owner.Name=="CloverDashboard" then
+            kaldrisCycle.status("Close the Clover menu covering the dialogue choice"); return false
+        end
+    end
+    if game:GetService("UserInputService"):GetFocusedTextBox() then return false end
+    local input=game:GetService("VirtualInputManager")
+    local pressed=false
+    local ok,err=pcall(function()
+        input:SendMouseMoveEvent(x,y,game)
+        input:SendMouseButtonEvent(x,y,0,true,game,0); pressed=true
+        task.wait(.08)
+    end)
+    if pressed then
+        local released=pcall(function() input:SendMouseButtonEvent(x,y,0,false,game,0) end)
+        ok=ok and released
+    end
+    if not ok then kaldrisCycle.status("Dialogue pointer click failed: "..tostring(err)) end
+    return ok and pressed
 end
 function kaldrisCycle.submitAltarChoice()
     local button=kaldrisCycle.dialogueChoice("Altar")
     if not button then return false end
-    if not golem.clickChoice(button) then
+    if kaldrisCycle.AltarClickedButton==button then
+        kaldrisCycle.status("Cinder Sigil click sent; waiting for the dialogue to change")
+        return false
+    end
+    if not kaldrisCycle.clickDialogueChoice(button) then
         kaldrisCycle.status("Cinder Sigil choice visible; dialogue click API failed")
         return false
     end
+    kaldrisCycle.AltarClickedButton=button
+    kaldrisCycle.Phase="AltarConfirm"; kaldrisCycle.AltarClickedAt=os.clock()
+    kaldrisCycle.status("Cinder Sigil clicked; verifying dialogue change")
+    return true
+end
+function kaldrisCycle.altarAccepted()
+    kaldrisCycle.AltarClickedButton=nil
     kaldrisCycle.Phase="Summoning"; kaldrisCycle.SummonAt=os.clock()
     kaldrisCycle.setCombat(true)
     kaldrisCycle.status("Cinder Sigil choice selected; boss combat armed, waiting for Kaldris")
-    return true
 end
 function kaldrisCycle.prestige(root,level)
     kaldrisCycle.setCombat(false)
@@ -5047,7 +5126,7 @@ function kaldrisCycle.prestige(root,level)
     -- Some versions open the prestige choices directly.
     local button=kaldrisCycle.dialogueChoice(stage)
     if not button and stage=="Open" then button=kaldrisCycle.dialogueChoice("Spins"); if button then stage="Spins" end end
-    if button and golem.clickChoice(button) then
+    if button and kaldrisCycle.clickDialogueChoice(button) then
         kaldrisCycle.LastChoice=now
         kaldrisCycle.DialogueStage=stage=="Open" and "Spins" or stage=="Spins" and "Confirm" or "AwaitLevel"
         kaldrisCycle.status(stage=="Spins" and "Spin prestige selected; verifying level reset" or "Wizard King dialogue: "..kaldrisCycle.DialogueStage)
@@ -5073,6 +5152,7 @@ function kaldrisCycle.tick(character,humanoid,root)
     if kaldrisCycle.Recovering then
         kaldrisCycle.Recovering=nil; kaldrisCycle.disconnectBoss(); kaldrisCycle.Phase="Altar"
     end
+    kaldrisCycle.configureCombat()
     if kaldrisCycle.Phase=="Prestige" then kaldrisCycle.prestige(root,level); return true end
     if level>=200 then
         kaldrisCycle.disconnectBoss()
@@ -5101,6 +5181,13 @@ function kaldrisCycle.tick(character,humanoid,root)
     if kaldrisCycle.Phase=="Summoning" then
         if os.clock()-kaldrisCycle.SummonAt>90 then kaldrisCycle.halt("No Kaldris appeared after selecting Cinder Sigil")
         else kaldrisCycle.status("Cinder Sigil choice selected; boss combat armed, waiting for Kaldris") end
+        return true
+    end
+    if kaldrisCycle.Phase=="AltarConfirm" then
+        if not kaldrisCycle.dialogueChoice("Altar") then kaldrisCycle.altarAccepted()
+        elseif os.clock()-kaldrisCycle.AltarClickedAt>10 then
+            kaldrisCycle.halt("Cinder Sigil dialogue did not change after the click; check sigil availability")
+        end
         return true
     end
     if kaldrisCycle.submitAltarChoice() then return true end
