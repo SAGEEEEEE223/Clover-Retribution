@@ -1714,11 +1714,13 @@ Toggles.KaldrisAutoCycle:OnChanged(function(enabled)
     kaldrisCycle.Phase="Altar"; kaldrisCycle.ResetCharacter=nil; kaldrisCycle.AfterReset=nil
     kaldrisCycle.AltarClickedButton=nil
     kaldrisCycle.PrestigeLevel=nil; kaldrisCycle.DialogueStage=nil; kaldrisCycle.Recovering=nil
+    kaldrisCycle.AdvisorReached=nil
     if enabled then
         teleportPaused=false; runtime.paused=false
         -- Enter the exclusive boss route first to disable every competing farm.
         kaldrisCycle.setCombat(true); kaldrisCycle.setCombat(false)
         kaldrisCycle.prompt("Altar"); kaldrisCycle.prompt("Wizard")
+        if kaldrisCycle.learnAdvisor then kaldrisCycle.learnAdvisor() end
         if Toggles.VampireAutoSkill then Toggles.VampireAutoSkill:SetValue(true) end
         kaldrisCycle.ConfigureAt=nil
         if kaldrisCycle.configureCombat then kaldrisCycle.configureCombat() end
@@ -3369,6 +3371,7 @@ npcTeleportBox:AddButton("Teleport to NPC", function()
         return
     end
     local destination = (npcRoot.CFrame * CFrame.new(0, 0, 5)).Position
+    if model.Name=="Advisor" and kaldrisCycle.rememberRoute then kaldrisCycle.rememberRoute("Advisor",npcRoot.Position) end
     teleportManual(destination, npcRoot.Position, model.Name)
 end)
 refreshTeleportNPCs()
@@ -4920,32 +4923,109 @@ function kaldrisCycle.prompt(kind)
     if cached and cached:IsDescendantOf(workspace) then return cached end
     local candidates={}
     for _,prompt in ipairs(workspace:GetDescendants()) do
-        if prompt:IsA("ProximityPrompt") then
-            local node=prompt.Parent
+        if prompt:IsA("ProximityPrompt") or kind=="Wizard" and prompt:IsA("ClickDetector") then
+            local node=prompt
             while node and node~=workspace do
                 local name=node.Name:lower():gsub("[^%w]", "")
+                local wizard=kind=="Wizard" and kaldrisCycle.isWizard(node)
                 if (kind=="Altar" and name=="emberaltar")
-                    or (kind=="Wizard" and (name=="fabio" or name=="wizardking" or name=="wizzardking" or name:match("^fabiowizardking"))) then
+                    or wizard then
                     table.insert(candidates,prompt); break
                 end
                 node=node.Parent
             end
         end
     end
+    if #candidates>1 and kind=="Wizard" then
+        local prompts={}
+        for _,candidate in ipairs(candidates) do
+            if candidate:IsA("ProximityPrompt") then table.insert(prompts,candidate) end
+        end
+        if #prompts==1 then candidates=prompts end
+    end
     if #candidates==1 then
         cached=candidates[1]; kaldrisCycle[kind.."Prompt"]=cached
         local part=cached.Parent
         if part:IsA("Attachment") then part=part.Parent end
-        if part:IsA("BasePart") then kaldrisCycle[kind.."Position"]=part.Position end
+        if part:IsA("BasePart") then kaldrisCycle.rememberRoute(kind,part.Position) end
         return cached
     end
+end
+function kaldrisCycle.isWizard(node)
+    local names={node.Name,node:GetAttribute("DisplayName"),node:GetAttribute("NPCName")}
+    if node:IsA("ProximityPrompt") then table.insert(names,node.ObjectText) end
+    if node:IsA("Model") then
+        local humanoid=node:FindFirstChildOfClass("Humanoid")
+        if humanoid then table.insert(names,humanoid.DisplayName) end
+        if humanoid or node:FindFirstChild("Head") then
+            for _,object in ipairs(node:GetDescendants()) do
+                if object:IsA("TextLabel") then table.insert(names,object.Text) end
+            end
+        end
+    end
+    for _,value in pairs(names) do
+        local name=tostring(value):lower():gsub("[^%w]", "")
+        if name=="fabio" or name:find("wizardking",1,true) or name:find("wizzardking",1,true)
+            or name:match("^fabioprestige") then return true end
+    end
+    return false
+end
+function kaldrisCycle.rememberRoute(kind,position)
+    kaldrisCycle[kind.."Position"]=position
+    local cfg=env.VampireFarmConfig
+    if type(cfg.KaldrisRoutes)~="table" then cfg.KaldrisRoutes={} end
+    local place=tostring(game.PlaceId)
+    if type(cfg.KaldrisRoutes[place])~="table" then cfg.KaldrisRoutes[place]={} end
+    cfg.KaldrisRoutes[place][kind]={position.X,position.Y,position.Z}
+    runtime.requestSave()
+end
+function kaldrisCycle.savedRoute(kind)
+    if kaldrisCycle[kind.."Position"] then return kaldrisCycle[kind.."Position"] end
+    local routes=env.VampireFarmConfig.KaldrisRoutes
+    local place=type(routes)=="table" and routes[tostring(game.PlaceId)]
+    local coordinates=type(place)=="table" and place[kind]
+    if type(coordinates)~="table" then return end
+    for index=1,3 do
+        local n=coordinates[index]
+        if type(n)~="number" or n~=n or math.abs(n)==math.huge then return end
+    end
+    local position=Vector3.new(coordinates[1],coordinates[2],coordinates[3])
+    kaldrisCycle[kind.."Position"]=position
+    return position
+end
+function kaldrisCycle.learnAdvisor()
+    refreshTeleportNPCs()
+    local choices={}
+    for _,model in pairs(npcByLabel) do
+        if model.Name:lower():gsub("[^%w]", "")=="advisor" and model:IsDescendantOf(workspace) then
+            local part=getRoot(model)
+            if part then table.insert(choices,part) end
+        end
+    end
+    if #choices==1 then kaldrisCycle.rememberRoute("Advisor",choices[1].Position) end
+end
+function kaldrisCycle.goAdvisor(root)
+    if kaldrisCycle.AdvisorReached then return true end
+    kaldrisCycle.learnAdvisor()
+    local destination=kaldrisCycle.savedRoute("Advisor")
+    if not destination then kaldrisCycle.status("Advisor route unavailable; use Teleport > NPC > Advisor once"); return false end
+    if (root.Position-destination).Magnitude>8 then
+        root.AssemblyLinearVelocity=Vector3.zero; root.AssemblyAngularVelocity=Vector3.zero
+        root.CFrame=CFrame.new(destination+Vector3.new(0,2,5))
+        kaldrisCycle.status("Prestige route: teleporting to Advisor")
+        return false
+    end
+    kaldrisCycle.AdvisorReached=true
+    task.spawn(function() pcall(function() player:RequestStreamAroundAsync(destination,3) end) end)
+    kaldrisCycle.status("At Advisor; locating Wizard King")
+    return true
 end
 function kaldrisCycle.travel(kind,root)
     local prompt=kaldrisCycle.prompt(kind)
     local part=prompt and prompt.Parent
     if part and part:IsA("Attachment") then part=part.Parent end
     if not part or not part:IsA("BasePart") then
-        local position=kaldrisCycle[kind.."Position"]
+        local position=kaldrisCycle.savedRoute(kind)
         if position and os.clock()-(kaldrisCycle.LastStream or -math.huge)>5 then
             kaldrisCycle.LastStream=os.clock()
             root.CFrame=CFrame.new(position+Vector3.new(0,3,3))
@@ -4954,8 +5034,8 @@ function kaldrisCycle.travel(kind,root)
         kaldrisCycle.status(kind.." prompt unavailable; move near it once to load the route")
         return
     end
-    kaldrisCycle[kind.."Position"]=part.Position
-    if not prompt.Enabled then kaldrisCycle.status(kind.." prompt is disabled; waiting"); return end
+    if kaldrisCycle[kind.."Position"]~=part.Position then kaldrisCycle.rememberRoute(kind,part.Position) end
+    if prompt:IsA("ProximityPrompt") and not prompt.Enabled then kaldrisCycle.status(kind.." prompt is disabled; waiting"); return end
     local range=math.min(5,math.max(1,prompt.MaxActivationDistance*.5))
     if (root.Position-part.Position).Magnitude>range then
         root.AssemblyLinearVelocity=Vector3.zero
@@ -4966,6 +5046,12 @@ function kaldrisCycle.travel(kind,root)
     return prompt
 end
 function kaldrisCycle.fire(prompt)
+    if prompt:IsA("ClickDetector") then
+        if type(fireclickdetector)~="function" then kaldrisCycle.status("NPC click API unavailable"); return false end
+        local ok,err=pcall(fireclickdetector,prompt)
+        if not ok then kaldrisCycle.status("NPC click failed: "..tostring(err)) end
+        return ok
+    end
     if type(fireproximityprompt)~="function" then kaldrisCycle.status("Prompt API unavailable"); return false end
     local ok,err=pcall(fireproximityprompt,prompt,math.max(0,prompt.HoldDuration))
     if not ok then kaldrisCycle.status("Prompt failed: "..tostring(err)) end
@@ -4988,6 +5074,7 @@ end
 function kaldrisCycle.resetFor(nextPhase,character,humanoid)
     kaldrisCycle.setCombat(false)
     kaldrisCycle.AltarClickedButton=nil
+    kaldrisCycle.AdvisorReached=nil
     kaldrisCycle.ResetCharacter=character
     kaldrisCycle.AfterReset=nextPhase
     kaldrisCycle.Phase="Resetting"
@@ -5128,6 +5215,12 @@ function kaldrisCycle.prestige(root,level)
     end
     local now=os.clock()
     if not kaldrisCycle.DialogueStage then
+        if not kaldrisCycle.goAdvisor(root) then return end
+        if kaldrisCycle.dialogueChoice("Spins") or kaldrisCycle.dialogueChoice("Open") then
+            kaldrisCycle.rememberRoute("Wizard",root.Position)
+            kaldrisCycle.DialogueStage="Open"; kaldrisCycle.DialogueAt=now; kaldrisCycle.PrestigeLevel=level
+            return
+        end
         local prompt=kaldrisCycle.travel("Wizard",root)
         if not prompt then return end
         if now-(kaldrisCycle.LastWizardPrompt or -math.huge)<5 then return end
