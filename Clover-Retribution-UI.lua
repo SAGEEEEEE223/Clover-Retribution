@@ -1720,7 +1720,7 @@ Toggles.KaldrisAutoCycle:OnChanged(function(enabled)
         -- Enter the exclusive boss route first to disable every competing farm.
         kaldrisCycle.setCombat(true); kaldrisCycle.setCombat(false)
         kaldrisCycle.prompt("Altar"); kaldrisCycle.prompt("Wizard")
-        if kaldrisCycle.learnAdvisor then kaldrisCycle.learnAdvisor() end
+        if kaldrisCycle.learnFabio then kaldrisCycle.learnFabio() end
         if Toggles.VampireAutoSkill then Toggles.VampireAutoSkill:SetValue(true) end
         kaldrisCycle.ConfigureAt=nil
         if kaldrisCycle.configureCombat then kaldrisCycle.configureCombat() end
@@ -1739,6 +1739,9 @@ Toggles.KaldrisAutoCycle:OnChanged(function(enabled)
         if Toggles.VampireAutoSkill then Toggles.VampireAutoSkill:SetValue(false) end
         kaldrisCycle.status("Cycle off")
     end
+end)
+kaldrisBox:AddButton("Save Wizard King here",function()
+    if kaldrisCycle.bindWizardHere then kaldrisCycle.bindWizardHere() end
 end)
 kaldrisBox:AddButton("Print cycle diagnostics",function()
     if not kaldrisCycle.level then return end
@@ -1762,7 +1765,7 @@ Toggles.KaldrisAirDodge:OnChanged(function(value) env.VampireFarmConfig.KaldrisA
 kaldrisBox:AddSlider("KaldrisDodgeHeight",{Text="Dodge height (studs)",Default=30,Min=10,Max=70,Rounding=0})
 Options.KaldrisDodgeHeight:OnChanged(function(value) env.VampireFarmConfig.KaldrisDodgeHeight=value end)
 kaldrisInfo:AddLabel("Aerial dodge requires Kaldris to expose a Casting BoolValue or boolean Casting attribute. It cannot predict unreported attacks or guarantee immunity.",true)
-kaldrisInfo:AddLabel("Repeat cycle spends one sigil per summon. At level 200 it resets, visits the streamed Wizard King and selects spin prestige. A detected level reset resumes the altar route. Missing routes, unknown dialogue or unconfirmed summons pause the cycle.",true)
+kaldrisInfo:AddLabel("Repeat cycle spends one sigil per summon. At level 200+ it teleports directly to Fabio Wizard King and selects spin prestige. A detected level reset resumes the altar route. Missing routes, unknown dialogue or unconfirmed summons pause the cycle.",true)
 local uiTab = Window:AddTab("Settings")
 local combatBox = farmTab:AddLeftGroupbox("Combat")
 local statBox = farmTab:AddRightGroupbox("Stats")
@@ -4921,6 +4924,14 @@ end
 function kaldrisCycle.prompt(kind)
     local cached=kaldrisCycle[kind.."Prompt"]
     if cached and cached:IsDescendantOf(workspace) then return cached end
+    local saved=env.VampireFarmConfig.KaldrisWizardPath
+    if kind=="Wizard" and type(saved)=="table" and saved.PlaceId==game.PlaceId and type(saved.Nodes)=="table" then
+        local node=workspace
+        for _,name in ipairs(saved.Nodes) do node=node and node:FindFirstChild(name) end
+        if node and (node:IsA("ProximityPrompt") or node:IsA("ClickDetector")) then
+            kaldrisCycle.WizardPrompt=node; return node
+        end
+    end
     local candidates={}
     for _,prompt in ipairs(workspace:GetDescendants()) do
         if prompt:IsA("ProximityPrompt") or kind=="Wizard" and prompt:IsA("ClickDetector") then
@@ -4965,10 +4976,40 @@ function kaldrisCycle.isWizard(node)
     end
     for _,value in pairs(names) do
         local name=tostring(value):lower():gsub("[^%w]", "")
-        if name=="fabio" or name:find("wizardking",1,true) or name:find("wizzardking",1,true)
+        if name=="fabio" or name=="threadweaver" or name=="fabiothreadweaver"
+            or name:find("wizardking",1,true) or name:find("wizzardking",1,true)
             or name:match("^fabioprestige") then return true end
     end
     return false
+end
+function kaldrisCycle.bindWizardHere()
+    local root=runtime.getRoot(player.Character)
+    if not root then kaldrisCycle.status("Character unavailable; cannot save Wizard King"); return end
+    local candidates={}
+    for _,prompt in ipairs(workspace:GetDescendants()) do
+        if prompt:IsA("ProximityPrompt") or prompt:IsA("ClickDetector") then
+            local part=prompt.Parent
+            if part and part:IsA("Attachment") then part=part.Parent end
+            if part and part:IsA("BasePart") then
+                local distance=(root.Position-part.Position).Magnitude
+                if distance<=12 then table.insert(candidates,{Prompt=prompt,Part=part,Distance=distance}) end
+            end
+        end
+    end
+    table.sort(candidates,function(a,b) return a.Distance<b.Distance end)
+    local choice=candidates[1]
+    if not choice or candidates[2] and math.abs(candidates[2].Distance-choice.Distance)<1 then
+        kaldrisCycle.status("Stand directly at Fabio's Interact prompt, then save again")
+        for _,candidate in ipairs(candidates) do print("[WizardNearby] "..candidate.Prompt:GetFullName().." distance="..candidate.Distance) end
+        return
+    end
+    local nodes={}
+    local node=choice.Prompt
+    while node and node~=workspace do table.insert(nodes,1,node.Name); node=node.Parent end
+    env.VampireFarmConfig.KaldrisWizardPath={PlaceId=game.PlaceId,Nodes=nodes}
+    kaldrisCycle.WizardPrompt=choice.Prompt
+    kaldrisCycle.rememberRoute("Wizard",choice.Part.Position)
+    kaldrisCycle.status("Wizard King interaction saved: "..choice.Prompt:GetFullName())
 end
 function kaldrisCycle.rememberRoute(kind,position)
     kaldrisCycle[kind.."Position"]=position
@@ -5003,6 +5044,50 @@ function kaldrisCycle.learnAdvisor()
         end
     end
     if #choices==1 then kaldrisCycle.rememberRoute("Advisor",choices[1].Position) end
+end
+function kaldrisCycle.learnFabio()
+    refreshTeleportNPCs()
+    for label,model in pairs(npcByLabel) do
+        local name=(label.." "..model.Name):lower():gsub("[^%w]", "")
+        if name:find("fabiowizardking",1,true) and model:IsDescendantOf(workspace) then
+            local root=getRoot(model)
+            if root then kaldrisCycle.FabioModel=model; kaldrisCycle.rememberRoute("Wizard",root.Position); return root.Position end
+        end
+    end
+    return kaldrisCycle.savedRoute("Wizard")
+end
+function kaldrisCycle.goFabio(root)
+    local destination=kaldrisCycle.learnFabio()
+    if not destination then kaldrisCycle.status("Fabio Wizard King NPC unavailable; refresh the NPC list near the castle"); return false end
+    if (root.Position-destination).Magnitude>6 then
+        root.AssemblyLinearVelocity=Vector3.zero; root.AssemblyAngularVelocity=Vector3.zero
+        root.CFrame=CFrame.new(destination+Vector3.new(0,1,3))
+        kaldrisCycle.status("Level 200+: teleporting directly to Fabio Wizard King")
+        task.spawn(function() pcall(function() player:RequestStreamAroundAsync(destination,3) end) end)
+        return false
+    end
+    return true
+end
+function kaldrisCycle.openFabio()
+    local prompt=kaldrisCycle.prompt("Wizard")
+    if not prompt and kaldrisCycle.FabioModel then
+        local model=kaldrisCycle.FabioModel
+        prompt=model:FindFirstChildWhichIsA("ProximityPrompt",true) or model:FindFirstChildWhichIsA("ClickDetector",true)
+    end
+    if prompt then return kaldrisCycle.fire(prompt) end
+    -- Fabio's visible interaction in the supplied screenshot is E.
+    -- This fallback is only reached after arriving at his verified NPC root.
+    if game:GetService("UserInputService"):GetFocusedTextBox() then return false end
+    local input=game:GetService("VirtualInputManager")
+    local pressed=false
+    local ok=pcall(function()
+        input:SendKeyEvent(true,Enum.KeyCode.E,false,game); pressed=true; task.wait(.12)
+    end)
+    if pressed then
+        local released=pcall(function() input:SendKeyEvent(false,Enum.KeyCode.E,false,game) end)
+        ok=ok and released
+    end
+    return ok and pressed
 end
 function kaldrisCycle.goAdvisor(root)
     if kaldrisCycle.AdvisorReached then return true end
@@ -5215,16 +5300,14 @@ function kaldrisCycle.prestige(root,level)
     end
     local now=os.clock()
     if not kaldrisCycle.DialogueStage then
-        if not kaldrisCycle.goAdvisor(root) then return end
+        if not kaldrisCycle.goFabio(root) then return end
         if kaldrisCycle.dialogueChoice("Spins") or kaldrisCycle.dialogueChoice("Open") then
             kaldrisCycle.rememberRoute("Wizard",root.Position)
             kaldrisCycle.DialogueStage="Open"; kaldrisCycle.DialogueAt=now; kaldrisCycle.PrestigeLevel=level
             return
         end
-        local prompt=kaldrisCycle.travel("Wizard",root)
-        if not prompt then return end
         if now-(kaldrisCycle.LastWizardPrompt or -math.huge)<5 then return end
-        if kaldrisCycle.fire(prompt) then
+        if kaldrisCycle.openFabio() then
             kaldrisCycle.LastWizardPrompt=now; kaldrisCycle.DialogueStage="Open"; kaldrisCycle.DialogueAt=now
             kaldrisCycle.PrestigeLevel=level
         end
@@ -5270,7 +5353,10 @@ function kaldrisCycle.tick(character,humanoid,root)
     if level>=200 then
         kaldrisCycle.disconnectBoss()
         if not Toggles.KaldrisSpinPrestige.Value then kaldrisCycle.halt("Reached level "..level); return true end
-        kaldrisCycle.resetFor("Prestige",character,humanoid); return true
+        kaldrisCycle.setCombat(false)
+        kaldrisCycle.Phase="Prestige"
+        kaldrisCycle.status("Level "..level.." reached; going directly to Fabio for spin prestige")
+        kaldrisCycle.prestige(root,level); return true
     end
     local boss=kaldrisCycle.findBoss()
     if boss then
