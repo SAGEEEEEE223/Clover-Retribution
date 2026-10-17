@@ -5042,32 +5042,34 @@ function kaldrisCycle.clickDialogueChoice(button)
     if not position or not size or size.X<=0 or size.Y<=0 then return false end
     local screen=button:FindFirstAncestorOfClass("ScreenGui")
     local inset=game:GetService("GuiService"):GetGuiInset()
-    local x=position.X+size.X*.5
-    local rawY=position.Y+size.Y*.5
-    local y=rawY+(screen and not screen.IgnoreGuiInset and inset.Y or 0)
-    local function hitsChoice(atY)
-        for _,item in ipairs(playerGui:GetGuiObjectsAtPosition(x,atY)) do
-            if item==button or item:IsDescendantOf(button) then return true end
-        end
-        return false
+    local guiX,guiY=position.X+size.X*.5,position.Y+size.Y*.5
+    -- GUI hit testing uses inset-relative coordinates. Virtual pointer input
+    -- uses screen coordinates; a successful GUI hit must not remove that offset.
+    local x=guiX+(inset.X or 0)
+    local y=guiY+inset.Y
+    local objects=playerGui:GetGuiObjectsAtPosition(guiX,guiY)
+    local matched=false
+    for _,item in ipairs(objects) do
+        if item==button or item:IsDescendantOf(button) then matched=true end
     end
-    if not hitsChoice(y) then
-        if y~=rawY and hitsChoice(rawY) then y=rawY
-        else kaldrisCycle.status("Dialogue choice has no matching screen hit target"); return false end
-    end
+    if not matched then kaldrisCycle.status("Dialogue choice has no matching GUI hit target"); return false end
     -- Send a normal pointer click: synthetic signals can return successfully
     -- without invoking the game's actual GUI input handling.
-    for _,item in ipairs(playerGui:GetGuiObjectsAtPosition(x,y)) do
+    for _,item in ipairs(objects) do
         local owner=item:FindFirstAncestorOfClass("ScreenGui")
         if owner and owner.Name=="CloverDashboard" then
             kaldrisCycle.status("Close the Clover menu covering the dialogue choice"); return false
         end
     end
-    if game:GetService("UserInputService"):GetFocusedTextBox() then return false end
+    local userInput=game:GetService("UserInputService")
+    if userInput:GetFocusedTextBox() then return false end
     local input=game:GetService("VirtualInputManager")
+    local priorBehavior=userInput.MouseBehavior
     local pressed=false
     local ok,err=pcall(function()
+        userInput.MouseBehavior=Enum.MouseBehavior.Default
         input:SendMouseMoveEvent(x,y,game)
+        task.wait()
         input:SendMouseButtonEvent(x,y,0,true,game,0); pressed=true
         task.wait(.08)
     end)
@@ -5075,8 +5077,25 @@ function kaldrisCycle.clickDialogueChoice(button)
         local released=pcall(function() input:SendMouseButtonEvent(x,y,0,false,game,0) end)
         ok=ok and released
     end
+    pcall(function()
+        if userInput.MouseBehavior==Enum.MouseBehavior.Default then userInput.MouseBehavior=priorBehavior end
+    end)
     if not ok then kaldrisCycle.status("Dialogue pointer click failed: "..tostring(err)) end
     return ok and pressed
+end
+function kaldrisCycle.signalDialogueChoice(button)
+    if not button or not kaldrisCycle.visible(button) or not button:IsA("GuiButton")
+        or type(getconnections)~="function" then return false end
+    for _,signal in ipairs({button.MouseButton1Click,button.Activated,button.MouseButton1Down}) do
+        local ok,connections=pcall(getconnections,signal)
+        if ok and type(connections)=="table" and #connections>0 then
+            if type(firesignal)=="function" then
+                local sent=pcall(firesignal,signal)
+                if sent then return true end
+            end
+        end
+    end
+    return false
 end
 function kaldrisCycle.submitAltarChoice()
     local button=kaldrisCycle.dialogueChoice("Altar")
@@ -5090,6 +5109,7 @@ function kaldrisCycle.submitAltarChoice()
         return false
     end
     kaldrisCycle.AltarClickedButton=button
+    kaldrisCycle.AltarFallbackTried=false
     kaldrisCycle.Phase="AltarConfirm"; kaldrisCycle.AltarClickedAt=os.clock()
     kaldrisCycle.status("Cinder Sigil clicked; verifying dialogue change")
     return true
@@ -5184,7 +5204,12 @@ function kaldrisCycle.tick(character,humanoid,root)
         return true
     end
     if kaldrisCycle.Phase=="AltarConfirm" then
-        if not kaldrisCycle.dialogueChoice("Altar") then kaldrisCycle.altarAccepted()
+        local choice=kaldrisCycle.dialogueChoice("Altar")
+        if not choice then kaldrisCycle.altarAccepted()
+        elseif not kaldrisCycle.AltarFallbackTried and os.clock()-kaldrisCycle.AltarClickedAt>=3 then
+            kaldrisCycle.AltarFallbackTried=true
+            local sent=kaldrisCycle.signalDialogueChoice(choice)
+            kaldrisCycle.status(sent and "Known altar button handler invoked; verifying response" or "No callable button handler; waiting for pointer response")
         elseif os.clock()-kaldrisCycle.AltarClickedAt>10 then
             kaldrisCycle.halt("Cinder Sigil dialogue did not change after the click; check sigil availability")
         end
