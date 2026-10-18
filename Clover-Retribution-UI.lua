@@ -5168,6 +5168,7 @@ function kaldrisCycle.resetFor(nextPhase,character,humanoid)
     if not ok then kaldrisCycle.halt("Reset failed: "..tostring(err)) end
 end
 function kaldrisCycle.halt(reason)
+    kaldrisCycle.StoppedFromPhase=kaldrisCycle.Phase
     kaldrisCycle.setCombat(false)
     if Toggles.VampireAutoSkill then Toggles.VampireAutoSkill:SetValue(false) end
     kaldrisCycle.Phase="Stopped"
@@ -5330,10 +5331,14 @@ function kaldrisCycle.prestige(root,level)
 end
 function kaldrisCycle.tick(character,humanoid,root)
     if not Toggles.KaldrisAutoCycle.Value then return false end
-    if kaldrisCycle.Phase=="Stopped" then kaldrisCycle.setCombat(false); return true end
     if runtime.paused then kaldrisCycle.status("Cycle paused"); return true end
     local level=kaldrisCycle.level()
     if not level then kaldrisCycle.setCombat(false); kaldrisCycle.status("Level unavailable; cycle paused"); return true end
+    if kaldrisCycle.Phase=="Stopped" then
+        if level>=200 and Toggles.KaldrisSpinPrestige.Value and kaldrisCycle.StoppedFromPhase~="Prestige" then
+            kaldrisCycle.Phase="Altar"
+        else kaldrisCycle.setCombat(false); return true end
+    end
     if kaldrisCycle.Phase=="Resetting" then
         if character and character~=kaldrisCycle.ResetCharacter and humanoid and humanoid.Health>0 and root then
             kaldrisCycle.ResetCharacter=nil; kaldrisCycle.Phase=kaldrisCycle.AfterReset
@@ -5346,7 +5351,8 @@ function kaldrisCycle.tick(character,humanoid,root)
         kaldrisCycle.status("Character resetting; return route resumes when character exists"); return true
     end
     if kaldrisCycle.Recovering then
-        kaldrisCycle.Recovering=nil; kaldrisCycle.disconnectBoss(); kaldrisCycle.Phase="Altar"
+        kaldrisCycle.Recovering=nil; kaldrisCycle.disconnectBoss()
+        if kaldrisCycle.Phase~="Prestige" then kaldrisCycle.Phase="Altar" end
     end
     kaldrisCycle.configureCombat()
     if kaldrisCycle.Phase=="Prestige" then kaldrisCycle.prestige(root,level); return true end
@@ -5355,6 +5361,8 @@ function kaldrisCycle.tick(character,humanoid,root)
         if not Toggles.KaldrisSpinPrestige.Value then kaldrisCycle.halt("Reached level "..level); return true end
         kaldrisCycle.setCombat(false)
         kaldrisCycle.Phase="Prestige"
+        kaldrisCycle.DialogueStage=nil; kaldrisCycle.PrestigeLevel=nil
+        kaldrisCycle.LastWizardPrompt=nil; kaldrisCycle.LastChoice=nil; kaldrisCycle.StoppedFromPhase=nil
         kaldrisCycle.status("Level "..level.." reached; going directly to Fabio for spin prestige")
         kaldrisCycle.prestige(root,level); return true
     end
