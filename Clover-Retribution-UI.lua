@@ -92,12 +92,12 @@ local function createCloverLibrary()
         end)
         connect(b.MouseLeave,function() animate(pressScale,.18,{Scale=1}) end)
         local hoverColor
-        b.MouseEnter:Connect(function()
+        connect(b.MouseEnter,function()
             if b:GetAttribute("NoHover") then return end
             hoverColor=b.BackgroundColor3
             Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=hoverColor:Lerp(colors.text,.055)}):Play()
         end)
-        b.MouseLeave:Connect(function()
+        connect(b.MouseLeave,function()
             if hoverColor and not b:GetAttribute("NoHover") then
                 Tween:Create(b,TweenInfo.new(.12),{BackgroundColor3=hoverColor}):Play()
             end
@@ -755,11 +755,25 @@ function runtime.switch(profile)
     end)
 end
 -- Devil Rift notifications and public-server scanning.
-runtime.rifts={active=true,enabled=false,scanning=false,seen={},visited={},connections={},statusText="Alerts off",nextHop=0}
+runtime.rifts={active=true,enabled=false,scanning=false,seen={},visited={},connections={},statusText="Alerts off",nextHop=0,
+    candidates=setmetatable({},{__mode="k"}),stats={servers=0,alerts=0,failures=0},generation=0}
 local rifts=runtime.rifts
 function rifts.status(message)
     rifts.statusText=message
-    if rifts.label then rifts.label:SetText(message) end
+    if rifts.label then pcall(function() rifts.label:SetText(message) end) end
+    if rifts.statsLabel then pcall(function() rifts.statsLabel:SetText(string.format("Servers checked: %d | Alerts sent: %d | Failed requests: %d",rifts.stats.servers,rifts.stats.alerts,rifts.stats.failures)) end) end
+end
+function rifts.retryDelay(response,fallback)
+    local delay=fallback
+    if type(response)=="table" then
+        local headers=response.Headers or response.headers
+        if type(headers)=="table" then delay=tonumber(headers["Retry-After"] or headers["retry-after"]) or delay end
+        if type(response.Body)=="string" and response.Body~="" then
+            local ok,data=pcall(function() return game:GetService("HttpService"):JSONDecode(response.Body) end)
+            if ok and type(data)=="table" then delay=tonumber(data.retry_after) or delay end
+        end
+    end
+    return math.clamp(delay,1,600)
 end
 function rifts.validURL(url)
     return type(url)=="string" and (url:match("^https://discord%.com/api/webhooks/%d+/[%w_%-]+$") or url:match("^https://discordapp%.com/api/webhooks/%d+/[%w_%-]+$"))~=nil
@@ -785,7 +799,7 @@ function rifts.isAnnouncement(message)
         (text:find("has spawned",1,true)~=nil or text:find("has appeared",1,true)~=nil or text:find("has opened",1,true)~=nil)
 end
 function rifts.position(object)
-    if not object then return nil end
+    if not object or not object:IsDescendantOf(workspace) then return nil end
     local part=object:IsA("BasePart") and object or object.PrimaryPart or object:FindFirstChildWhichIsA("BasePart",true)
     return part and part.Position
 end
@@ -813,17 +827,30 @@ function rifts.payload(object,announcement,isTest)
     }}}
 end
 function rifts.send(object,announcement,isTest)
+    if not rifts.active then return false end
+    if os.clock()<(rifts.retryAt or 0) then rifts.status("Waiting for webhook retry cooldown"); return false end
     local url=runtime.config.RiftWebhookURL
     if not rifts.validURL(url) then rifts.status("Enter a valid Discord webhook URL"); return false end
     local send=rifts.transport()
     if not send then rifts.status("HTTP request support is unavailable"); return false end
-    local ok,response=pcall(send,{Url=url,Method="POST",Headers={["Content-Type"]="application/json"},Body=game:GetService("HttpService"):JSONEncode(rifts.payload(object,announcement,isTest))})
+    local generation=rifts.generation
+    local ok,response=pcall(function()
+        return send({Url=url,Method="POST",Headers={["Content-Type"]="application/json"},Body=game:GetService("HttpService"):JSONEncode(rifts.payload(object,announcement,isTest))})
+    end)
+    if not rifts.active or generation~=rifts.generation then return false end
     local code=ok and type(response)=="table" and tonumber(response.StatusCode or response.Status)
     if not code or code<200 or code>=300 then
-        rifts.status(code==429 and "Discord rate limited; retrying later" or "Webhook failed"..(code and " (HTTP "..code..")" or ""))
-        rifts.retryAt=os.clock()+(code==429 and 60 or 15)
+        rifts.stats.failures+=1
+        local delay=rifts.retryDelay(response,code==429 and 60 or 15)
+        rifts.retryAt=os.clock()+delay
+        if code==401 or code==403 or code==404 then
+            rifts.stopScan("Webhook rejected (HTTP "..code.."); replace the URL before restarting")
+            rifts.enabled=false; rifts.pending=nil
+        else rifts.status("Webhook failed"..(code and " (HTTP "..code..")" or "").."; retry in "..math.ceil(delay).."s") end
         return false
     end
+    rifts.retryAt=nil
+    if not isTest then rifts.stats.alerts+=1 end
     rifts.status(isTest and "Test alert sent" or "Devil Rift alert sent; scanner stopped here")
     return true
 end
@@ -831,11 +858,13 @@ function rifts.statePath() return "CloverRiftScanner-"..tostring(player.UserId).
 function rifts.persist(enabled)
     if type(writefile)~="function" then return false end
     local state={Enabled=enabled,UserId=player.UserId,PlaceId=game.PlaceId,FromJob=game.JobId,Expires=os.time()+180,
-        RunId=rifts.runId,Visited=rifts.visited,Cursor=rifts.cursor,WebhookURL=runtime.config.RiftWebhookURL,Dwell=runtime.config.RiftScanSeconds}
-    return pcall(writefile,rifts.statePath(),game:GetService("HttpService"):JSONEncode(state))
+        RunId=rifts.runId,Visited=rifts.visited,Cursor=rifts.cursor,Stats=rifts.stats,WebhookURL=runtime.config.RiftWebhookURL,Dwell=runtime.config.RiftScanSeconds}
+    return pcall(function() writefile(rifts.statePath(),game:GetService("HttpService"):JSONEncode(state)) end)
 end
 function rifts.stopScan(message)
+    rifts.generation+=1
     rifts.scanning=false
+    rifts.teleportPending=nil
     rifts.persist(false)
     if message then rifts.status(message) end
 end
@@ -846,7 +875,8 @@ function rifts.detect(object,announcement)
     if rifts.seen[key] then return end
     rifts.pending={object=object,announcement=announcement}
     rifts.sending=true
-    if rifts.send(object,announcement,false) then
+    local generation=rifts.generation
+    if rifts.send(object,announcement,false) and generation==rifts.generation then
         rifts.seen[key]=true; rifts.pending=nil
         rifts.stopScan("Devil Rift alert sent; staying in this server")
     end
@@ -854,8 +884,15 @@ function rifts.detect(object,announcement)
 end
 function rifts.scanObjects()
     local candidate
-    for _,object in ipairs(workspace:GetDescendants()) do
-        if rifts.isRift(object) then
+    if not rifts.lastFullScan or os.clock()-rifts.lastFullScan>=30 then
+        rifts.lastFullScan=os.clock()
+        for _,object in ipairs(workspace:GetDescendants()) do
+            if rifts.isRift(object) then rifts.candidates[object]=true end
+        end
+    end
+    for object in pairs(rifts.candidates) do
+        if not object:IsDescendantOf(workspace) or not rifts.isRift(object) then rifts.candidates[object]=nil
+        else
             local parent=object.Parent
             if not (parent and rifts.isRift(parent)) then candidate=object; break end
         end
@@ -865,12 +902,16 @@ function rifts.scanObjects()
 end
 function rifts.chooseServer(data)
     for _,server in ipairs(type(data)=="table" and type(data.data)=="table" and data.data or {}) do
-        if type(server.id)=="string" and server.id~=game.JobId and not rifts.visited[server.id]
-            and tonumber(server.playing) and tonumber(server.maxPlayers) and server.playing<server.maxPlayers then return server.id end
+        local playing,maximum=tonumber(server.playing),tonumber(server.maxPlayers)
+        local visited=rifts.visited[server.id]
+        if type(server.id)=="string" and server.id~="" and server.id~=game.JobId
+            and (not visited or type(visited)=="number" and os.time()-visited>=1800)
+            and playing and maximum and playing>=0 and playing<maximum then return server.id end
     end
 end
 function rifts.hop()
-    if rifts.hopping or not rifts.scanning then return end
+    if rifts.hopping or rifts.teleportPending or not rifts.scanning then return end
+    local generation=rifts.generation
     rifts.hopping=true
     local send=rifts.transport()
     local cursor=rifts.cursor or ""
@@ -879,9 +920,12 @@ function rifts.hop()
         local url="https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100&excludeFullGames=true"
         if cursor~="" then url..="&cursor="..game:GetService("HttpService"):UrlEncode(cursor) end
         local ok,response=pcall(send,{Url=url,Method="GET"})
-        if not rifts.scanning then break end
+        if not rifts.scanning or generation~=rifts.generation then rifts.hopping=false; return end
         if not ok or type(response)~="table" or tonumber(response.StatusCode or response.Status)~=200 then
-            rifts.status("Server list unavailable; retrying in 60 seconds"); break
+            rifts.stats.failures+=1
+            rifts.nextHop=os.clock()+rifts.retryDelay(response,60)
+            rifts.status("Server list unavailable; waiting before retry")
+            rifts.hopping=false; return
         end
         local parsed,data=pcall(function() return game:GetService("HttpService"):JSONDecode(response.Body) end)
         if not parsed or type(data)~="table" then rifts.status("Invalid server-list response"); break end
@@ -892,7 +936,7 @@ function rifts.hop()
         if type(cursor)~="string" or cursor=="" then break end
     end
     if target and rifts.scanning then
-        rifts.visited[target]=true
+        rifts.visited[target]=os.time()
         if not rifts.persist(true) then rifts.stopScan("Cannot save scanner state; hopping stopped")
         else
             if not rifts.queued then
@@ -900,40 +944,48 @@ function rifts.hop()
 local p=%q
 if type(readfile)=="function" then
     local ok,s=pcall(function() return game:GetService("HttpService"):JSONDecode(readfile(p)) end)
-    if ok and type(s)=="table" and s.Enabled and s.Expires>=os.time() and s.PlaceId==game.PlaceId and s.FromJob~=game.JobId and s.UserId==game:GetService("Players").LocalPlayer.UserId and getgenv().CloverRiftLoadedRun~=s.RunId then
-        getgenv().CloverRiftLoadedRun=s.RunId; getgenv().CloverRiftResume=s
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/SAGEEEEEE223/Clover-Retribution/main/Clover-Retribution-UI.lua"))()
+    if ok and type(s)=="table" and s.Enabled and type(s.Expires)=="number" and s.Expires>=os.time() and s.PlaceId==game.PlaceId and s.FromJob~=game.JobId and s.UserId==game:GetService("Players").LocalPlayer.UserId and getgenv().CloverRiftLoadedRun~=s.RunId then
+        getgenv().CloverRiftResume=s
+        local loaded=pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/SAGEEEEEE223/Clover-Retribution/main/Clover-Retribution-UI.lua"))() end)
+        if loaded then getgenv().CloverRiftLoadedRun=s.RunId end
     end
 end]],rifts.statePath())
                 local queued=pcall(rifts.queueFunction(),bootstrap)
                 if not queued then rifts.stopScan("Queue-on-teleport failed; scanner stopped") else rifts.queued=true end
             end
-            if rifts.scanning then
+            if rifts.scanning and generation==rifts.generation then
+                rifts.teleportPending={id=target,at=os.clock()}
                 rifts.status("Joining next public server...")
                 local ok=pcall(function() game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId,target,player) end)
-                if not ok then rifts.status("Teleport failed; retrying another server in 60 seconds") end
+                if not ok then rifts.teleportPending=nil; rifts.status("Teleport failed; retrying another server in 60 seconds") end
             end
         end
     elseif rifts.scanning then rifts.status("No unvisited joinable server in checked pages; retrying in 60 seconds") end
     rifts.nextHop=os.clock()+60; rifts.hopping=false
 end
 function rifts.startScan(resume)
+    if rifts.scanning or rifts.hopping or rifts.teleportPending then rifts.status("Scanner is already running"); return end
     if not rifts.validURL(runtime.config.RiftWebhookURL) then rifts.status("Enter your Discord webhook URL first"); return end
     if not rifts.transport() or not rifts.queueFunction() or type(writefile)~="function" or type(readfile)~="function" then
         rifts.status("Scanner needs HTTP, file access and queue-on-teleport support"); return
     end
     if game.JobId=="" or game.PrivateServerId~="" then rifts.status("Start scanning from a public server"); return end
+    rifts.generation+=1
     rifts.runId=resume and resume.RunId or game:GetService("HttpService"):GenerateGUID(false)
+    if resume and type(resume.Stats)=="table" then
+        for _,key in ipairs({"servers","alerts","failures"}) do rifts.stats[key]=math.max(0,tonumber(resume.Stats[key]) or 0) end
+    end
+    rifts.stats.servers+=1
     rifts.visited=resume and type(resume.Visited)=="table" and resume.Visited or {}
     rifts.cursor=resume and resume.Cursor or ""
-    rifts.visited[game.JobId]=true; rifts.enabled=true; rifts.scanning=true
+    rifts.visited[game.JobId]=os.time(); rifts.enabled=true; rifts.scanning=true
     rifts.nextHop=os.clock()+math.clamp(tonumber(runtime.config.RiftScanSeconds) or 45,20,180)
     if not rifts.persist(true) then rifts.scanning=false; rifts.status("Cannot save scanner state"); return end
     rifts.status("Scanning this server; will hop if no rift is detected")
 end
 function rifts.start()
     local resume=env.CloverRiftResume; env.CloverRiftResume=nil
-    if type(resume)=="table" and resume.UserId==player.UserId and resume.PlaceId==game.PlaceId and resume.Expires>=os.time() then
+    if type(resume)=="table" and resume.Enabled and resume.UserId==player.UserId and resume.PlaceId==game.PlaceId and type(resume.Expires)=="number" and resume.Expires>=os.time() then
         runtime.config.RiftWebhookURL=resume.WebhookURL; runtime.config.RiftScanSeconds=resume.Dwell
         rifts.startScan(resume)
     end
@@ -945,14 +997,34 @@ function rifts.start()
         end)
     end)
     if ok then table.insert(rifts.connections,connection) end
+    table.insert(rifts.connections,workspace.DescendantAdded:Connect(function(object)
+        if rifts.isRift(object) then rifts.candidates[object]=true end
+    end))
+    table.insert(rifts.connections,game:GetService("TeleportService").TeleportInitFailed:Connect(function(who)
+        if who==player and rifts.scanning and rifts.teleportPending then
+            rifts.teleportPending=nil; rifts.nextHop=os.clock()+20
+            rifts.stats.failures+=1
+            rifts.status("Server could not be joined; trying another in 20s")
+        end
+    end))
     task.spawn(function()
         while rifts.active and env.CloverRuntime==runtime do
+            local ok=pcall(function()
+            if rifts.teleportPending and os.clock()-rifts.teleportPending.at>45 then
+                rifts.teleportPending=nil; rifts.nextHop=os.clock()+15
+                rifts.status("Teleport timed out; trying another server shortly")
+            end
             if rifts.enabled then
                 if rifts.pending then rifts.detect(rifts.pending.object,rifts.pending.announcement) end
                 local candidate=rifts.scanObjects()
                 if candidate or rifts.pending then rifts.nextHop=os.clock()+45 end
             end
             if rifts.scanning and os.clock()>=rifts.nextHop then rifts.hop() end
+            end)
+            if not ok then
+                rifts.hopping=false; rifts.nextHop=os.clock()+30
+                rifts.stats.failures+=1; rifts.status("Scanner recovered from an error; retrying shortly")
+            end
             task.wait(5)
         end
     end)
@@ -961,23 +1033,54 @@ function rifts.shutdown()
     rifts.active=false; rifts.enabled=false; rifts.stopScan()
     for _,connection in ipairs(rifts.connections) do connection:Disconnect() end
 end
+function rifts.enableAlerts()
+    if not rifts.validURL(runtime.config.RiftWebhookURL) then rifts.status("Enter a valid Discord webhook URL first"); return false end
+    if not rifts.transport() then rifts.status("HTTP request support is unavailable"); return false end
+    rifts.enabled=true; rifts.pending=nil
+    rifts.status("Watching this server for Devil Rifts")
+    return true
+end
+function rifts.testAlert()
+    if rifts.testing or rifts.sending then rifts.status("An alert is already being sent"); return end
+    rifts.testing=true
+    local ok=pcall(function() rifts.send(nil,nil,true) end)
+    rifts.testing=false
+    if not ok then rifts.status("Test could not be sent; check HTTP support") end
+end
 function rifts.addUI(window)
-    local box=window:AddTab("Webhooks"):AddLeftGroupbox("Devil Rift alerts")
+    local tab=window:AddTab("Webhooks")
+    local box=tab:AddLeftGroupbox("Devil Rift alerts")
+    local scan=tab:AddRightGroupbox("Public-server scanner")
     local option=box:AddInput("RiftWebhookURL",{Text="Discord webhook URL",Default=runtime.config.RiftWebhookURL or "",Finished=true})
     option:OnChanged(function(value)
         runtime.config.RiftWebhookURL=tostring(value):match("^%s*(.-)%s*$")
         -- The shared observable already saves this value locally; never print the webhook token.
         runtime.requestSave()
     end)
-    box:AddButton("Send test alert",function() task.spawn(function() rifts.send(nil,nil,true) end) end)
-    box:AddButton("Enable alerts in this server",function() rifts.enabled=true; rifts.status("Watching this server for Devil Rifts") end)
-    box:AddSlider("RiftScanSeconds",{Text="Seconds per server",Default=runtime.config.RiftScanSeconds or 45,Min=20,Max=180,Rounding=0})
+    box:AddButton("Send test alert",function() task.spawn(rifts.testAlert) end)
+    box:AddButton("Enable alerts in this server",rifts.enableAlerts)
+    scan:AddSlider("RiftScanSeconds",{Text="Seconds per server",Default=runtime.config.RiftScanSeconds or 45,Min=20,Max=180,Rounding=0})
         :OnChanged(function(value) runtime.config.RiftScanSeconds=value; runtime.requestSave() end)
-    box:AddButton("Start public-server scanner",function() rifts.startScan() end)
-    box:AddButton("Stop hopping; keep alerts",function() rifts.stopScan("Server hopping stopped; alerts remain active") end)
-    box:AddButton("Stop scanner and alerts",function() rifts.enabled=false; rifts.stopScan("Scanner and alerts off") end)
-    rifts.label=box:AddLabel(rifts.statusText,true)
-    box:AddLabel("Visits public servers in this place one at a time. Stops here when an alert is sent. A streamed-out rift may be missed.",true)
+    scan:AddButton("Start public-server scanner",function() rifts.startScan() end)
+    scan:AddButton("Stop hopping; keep alerts",function() rifts.stopScan(rifts.enabled and "Server hopping stopped; alerts remain active" or "Scanner and alerts off") end)
+    scan:AddButton("Stop scanner and alerts",function() rifts.enabled=false; rifts.pending=nil; rifts.stopScan("Scanner and alerts off") end)
+    rifts.label=scan:AddLabel(rifts.statusText,true)
+    rifts.statsLabel=scan:AddLabel("",true)
+    rifts.status(rifts.statusText)
+    scan:AddButton("Check scanner support",function()
+        local missing={}
+        if not rifts.transport() then table.insert(missing,"HTTP requests") end
+        if not rifts.queueFunction() then table.insert(missing,"queue-on-teleport") end
+        if type(readfile)~="function" or type(writefile)~="function" then table.insert(missing,"local file access") end
+        rifts.status(#missing==0 and "Scanner support is available" or "Missing: "..table.concat(missing,", "))
+    end)
+    scan:AddButton("Copy this server's join link",function()
+        if type(setclipboard)~="function" then rifts.status("Clipboard support is unavailable"); return end
+        local ok=pcall(setclipboard,"https://www.roblox.com/games/start?placeId="..game.PlaceId.."&gameInstanceId="..game.JobId)
+        rifts.status(ok and "Current server join link copied" or "Could not copy join link")
+    end)
+    scan:AddLabel("Visits public servers one at a time and stops on an alert. Skips recently visited servers for 30 minutes. It cannot cover every server at once.",true)
+    box:AddLabel("Coordinates require a visible rift object. Announcements can trigger alerts without coordinates; streamed-out rifts may be missed.",true)
     box:AddLabel("Paste your webhook here; it is saved locally. Detection uses named Devil Rift objects and system spawn announcements.",true)
 end
 
